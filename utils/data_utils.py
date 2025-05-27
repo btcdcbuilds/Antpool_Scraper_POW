@@ -3,7 +3,7 @@ import json
 import datetime
 from typing import List, Dict, Any, Optional
 
-def save_json_data(data: Any, output_file: str) -> None:
+def save_json_to_file(data: Any, output_file: str) -> None:
     """Save data to JSON file.
     
     Args:
@@ -11,13 +11,24 @@ def save_json_data(data: Any, output_file: str) -> None:
         output_file: Path to output file
     """
     # Create directory if it doesn't exist
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
     
     # Save data to JSON file
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
     
     print(f"Data saved to: {output_file}")
+
+# Alias for backward compatibility
+save_json_data = save_json_to_file
+
+def format_timestamp() -> str:
+    """Format current timestamp to ISO format.
+    
+    Returns:
+        str: Formatted timestamp string
+    """
+    return datetime.datetime.now().isoformat()
 
 def parse_hashrate(hashrate_str: str) -> float:
     """Parse hashrate string to float value in TH/s.
