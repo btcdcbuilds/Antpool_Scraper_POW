@@ -442,6 +442,8 @@ class AntpoolWorkerScraper:
         """Get worker statistics from the worker tab."""
         print("Getting worker statistics...")
         worker_stats = []
+        active_workers = 0
+        inactive_workers = 0
         
         # Determine total pages
         total_pages = await self.page.evaluate('''
@@ -526,13 +528,30 @@ class AntpoolWorkerScraper:
                     worker_stat["observer_user_id"] = self.observer_user_id
                     worker_stat["coin_type"] = self.coin_type
                     worker_stat["hashrate_chart"] = ""  # No chart data
+                    
+                    # Count active/inactive workers
+                    if worker_stat["status"] == "active":
+                        active_workers += 1
+                    else:
+                        inactive_workers += 1
                 
                 # Add to overall worker stats
                 worker_stats.extend(page_worker_stats)
                 
-                # Print first row for verification
-                if worker_stats and len(worker_stats) > 0:
-                    print(f"First worker data: {worker_stats[0]}")
+                # Print progress update
+                print(f"Progress: {len(worker_stats)} workers extracted so far ({active_workers} active, {inactive_workers} inactive)")
+                
+                # Print first row for verification on first page
+                if current_page == 1 and worker_stats and len(worker_stats) > 0:
+                    print(f"First worker data sample:")
+                    print(f"  Worker: {worker_stats[0]['worker']}")
+                    print(f"  Status: {worker_stats[0]['status']}")
+                    print(f"  10-Min Hashrate: {worker_stats[0]['ten_min_hashrate']}")
+                    print(f"  1H Hashrate: {worker_stats[0]['one_h_hashrate']}")
+                    print(f"  24H Hashrate: {worker_stats[0]['h24_hashrate']}")
+                    print(f"  Rejection Rate: {worker_stats[0]['rejection_rate']}")
+                    print(f"  Last Share Time: {worker_stats[0]['last_share_time']}")
+                    print(f"  Connections/24H: {worker_stats[0]['connections_24h']}")
             else:
                 print(f"No workers found on page {current_page}")
                 
@@ -558,6 +577,17 @@ class AntpoolWorkerScraper:
                                 if cells and len(cells) >= 7:
                                     extract_text = lambda cell: re.sub(r'<[^>]*>', '', cell).strip()
                                     
+                                    # Determine worker status based on last share time
+                                    last_share_time = extract_text(cells[5])
+                                    ten_min_hashrate = extract_text(cells[1])
+                                    h24_hashrate = extract_text(cells[3])
+                                    
+                                    status = "active"
+                                    if (last_share_time.lower().find("never") >= 0 or 
+                                        last_share_time.lower().find("offline") >= 0 or
+                                        (ten_min_hashrate == "0 TH/s" and h24_hashrate == "0 TH/s")):
+                                        status = "inactive"
+                                    
                                     worker_stat = {
                                         "worker": extract_text(cells[0]),
                                         "ten_min_hashrate": extract_text(cells[1]),
@@ -567,16 +597,34 @@ class AntpoolWorkerScraper:
                                         "last_share_time": extract_text(cells[5]),
                                         "connections_24h": extract_text(cells[6]),
                                         "hashrate_chart": "",
-                                        "status": "active",
+                                        "status": status,
                                         "timestamp": format_timestamp(),
                                         "observer_user_id": self.observer_user_id,
                                         "coin_type": self.coin_type
                                     }
                                     worker_stats.append(worker_stat)
+                                    
+                                    # Count active/inactive workers
+                                    if status == "active":
+                                        active_workers += 1
+                                    else:
+                                        inactive_workers += 1
                             
                             if worker_stats:
                                 print(f"Extracted {len(worker_stats)} workers from HTML")
-                                print(f"First worker data: {worker_stats[0]}")
+                                print(f"Progress: {len(worker_stats)} workers extracted so far ({active_workers} active, {inactive_workers} inactive)")
+                                
+                                # Print first row for verification if this is the first data
+                                if len(worker_stats) > 0 and current_page == 1:
+                                    print(f"First worker data sample (from HTML):")
+                                    print(f"  Worker: {worker_stats[0]['worker']}")
+                                    print(f"  Status: {worker_stats[0]['status']}")
+                                    print(f"  10-Min Hashrate: {worker_stats[0]['ten_min_hashrate']}")
+                                    print(f"  1H Hashrate: {worker_stats[0]['one_h_hashrate']}")
+                                    print(f"  24H Hashrate: {worker_stats[0]['h24_hashrate']}")
+                                    print(f"  Rejection Rate: {worker_stats[0]['rejection_rate']}")
+                                    print(f"  Last Share Time: {worker_stats[0]['last_share_time']}")
+                                    print(f"  Connections/24H: {worker_stats[0]['connections_24h']}")
                     else:
                         print("No table found on the page")
                         
@@ -613,6 +661,17 @@ class AntpoolWorkerScraper:
                                                     if cells and len(cells) >= 7:
                                                         extract_text = lambda cell: re.sub(r'<[^>]*>', '', cell).strip()
                                                         
+                                                        # Determine worker status based on last share time
+                                                        last_share_time = extract_text(cells[5])
+                                                        ten_min_hashrate = extract_text(cells[1])
+                                                        h24_hashrate = extract_text(cells[3])
+                                                        
+                                                        status = "active"
+                                                        if (last_share_time.lower().find("never") >= 0 or 
+                                                            last_share_time.lower().find("offline") >= 0 or
+                                                            (ten_min_hashrate == "0 TH/s" and h24_hashrate == "0 TH/s")):
+                                                            status = "inactive"
+                                                        
                                                         worker_stat = {
                                                             "worker": extract_text(cells[0]),
                                                             "ten_min_hashrate": extract_text(cells[1]),
@@ -622,16 +681,22 @@ class AntpoolWorkerScraper:
                                                             "last_share_time": extract_text(cells[5]),
                                                             "connections_24h": extract_text(cells[6]),
                                                             "hashrate_chart": "",
-                                                            "status": "active",
+                                                            "status": status,
                                                             "timestamp": format_timestamp(),
                                                             "observer_user_id": self.observer_user_id,
                                                             "coin_type": self.coin_type
                                                         }
                                                         worker_stats.append(worker_stat)
+                                                        
+                                                        # Count active/inactive workers
+                                                        if status == "active":
+                                                            active_workers += 1
+                                                        else:
+                                                            inactive_workers += 1
                                                 
                                                 if worker_stats:
                                                     print(f"Extracted {len(worker_stats)} workers from iframe HTML")
-                                                    print(f"First worker data: {worker_stats[0]}")
+                                                    print(f"Progress: {len(worker_stats)} workers extracted so far ({active_workers} active, {inactive_workers} inactive)")
                                                     break  # Stop checking other iframes
                                 except Exception as e:
                                     print(f"Error checking iframe {i+1}: {str(e)}")
@@ -664,7 +729,10 @@ class AntpoolWorkerScraper:
             
             current_page += 1
         
-        print(f"Extracted data for {len(worker_stats)} workers")
+        print(f"\n===== Worker Extraction Summary =====")
+        print(f"Total workers extracted: {len(worker_stats)}")
+        print(f"Active workers: {active_workers}")
+        print(f"Inactive workers: {inactive_workers}")
         
         # If no workers were found, create a placeholder entry
         if not worker_stats:
@@ -735,7 +803,9 @@ class AntpoolWorkerScraper:
             # Capture worker table screenshot
             screenshot_info = await self.capture_worker_table_screenshot()
             
-            print("\nWorker scraping completed successfully!")
+            print("\n===== Worker Scraping Completed Successfully =====")
+            print(f"Account: {self.observer_user_id} ({self.coin_type})")
+            print(f"Total workers extracted: {len(worker_stats)}")
             print(f"Worker stats saved to: {output_file}")
             if screenshot_info["screenshot"]:
                 print(f"Worker table screenshot saved to: {screenshot_info['screenshot']}")
@@ -774,32 +844,50 @@ async def save_to_supabase(supabase, workers_data):
         total_workers = len(workers_data)
         success_count = 0
         
+        print(f"\n===== Uploading {total_workers} Workers to Supabase =====")
+        print(f"Using batch size of {batch_size} workers per request")
+        
         for i in range(0, total_workers, batch_size):
             batch = workers_data[i:i+batch_size]
-            print(f"Uploading batch {i//batch_size + 1}/{(total_workers+batch_size-1)//batch_size} ({len(batch)} workers)")
+            batch_num = i//batch_size + 1
+            total_batches = (total_workers+batch_size-1)//batch_size
+            print(f"Uploading batch {batch_num}/{total_batches} ({len(batch)} workers)")
             
             try:
                 result = supabase.table("mining_workers").insert(batch).execute()
                 if hasattr(result, 'data') and result.data:
                     success_count += len(batch)
-                    print(f"✅ Successfully uploaded batch {i//batch_size + 1}")
+                    print(f"✅ Successfully uploaded batch {batch_num}/{total_batches}")
                 else:
-                    print(f"❌ Error uploading batch {i//batch_size + 1}: {result}")
+                    print(f"❌ Error uploading batch {batch_num}/{total_batches}: {result}")
             except Exception as batch_error:
-                print(f"❌ Error uploading batch {i//batch_size + 1}: {batch_error}")
+                print(f"❌ Error uploading batch {batch_num}/{total_batches}: {batch_error}")
                 # Fall back to individual inserts for this batch
+                print(f"Falling back to individual inserts for batch {batch_num}")
+                batch_success = 0
+                
                 for worker in batch:
                     try:
                         result = supabase.table("mining_workers").insert(worker).execute()
                         if hasattr(result, 'data') and result.data:
                             success_count += 1
-                            print(f"✅ Saved worker {worker['worker']} to Supabase")
+                            batch_success += 1
                         else:
-                            print(f"❌ Error saving worker {worker['worker']} to Supabase: {result}")
+                            print(f"❌ Error saving worker {worker['worker']}")
                     except Exception as worker_error:
-                        print(f"❌ Error saving worker {worker['worker']} to Supabase: {worker_error}")
+                        print(f"❌ Error saving worker {worker['worker']}: {str(worker_error)[:100]}...")
+                
+                print(f"Individual inserts: {batch_success}/{len(batch)} workers saved successfully")
         
-        print(f"✅ Saved {success_count}/{total_workers} workers to Supabase")
+        print(f"\n===== Supabase Upload Summary =====")
+        print(f"Total workers: {total_workers}")
+        print(f"Successfully uploaded: {success_count}")
+        print(f"Failed: {total_workers - success_count}")
+        
+        if total_workers > 0:
+            success_rate = (success_count / total_workers) * 100
+            print(f"Success rate: {success_rate:.1f}%")
+        
         return success_count > 0
     except Exception as e:
         print(f"❌ Error saving to Supabase: {e}")
@@ -943,7 +1031,8 @@ async def main_async(args):
     try:
         # Process each account
         results = []
-        for account in accounts:
+        for i, account in enumerate(accounts):
+            print(f"\n===== Processing Account {i+1}/{len(accounts)} =====")
             result = await process_account(browser, args.output_dir, supabase, account, args.debug)
             results.append(result)
         
