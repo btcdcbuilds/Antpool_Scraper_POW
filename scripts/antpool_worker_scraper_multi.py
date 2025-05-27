@@ -1,57 +1,53 @@
 #!/usr/bin/env python3
 """
-Antpool Worker Stats Scraper - Multi-Account Version
+Antpool Worker Stats Scraper
 
-This script scrapes worker statistics from Antpool's observer page for multiple accounts
-stored in Supabase. It navigates to the Worker tab and extracts data for all workers.
-
-Usage:
-    python3 antpool_worker_scraper_multi.py [--skip_supabase] [--debug]
-    python3 antpool_worker_scraper_multi.py --access_key=<access_key> --user_id=<observer_user_id> --coin_type=<coin_type> --output_dir=<output_dir>
+This script scrapes worker statistics from Antpool's observer page and saves the data
+to a JSON file and Supabase. It navigates to the Worker tab and extracts data for all workers,
+setting the page size to 80 results per page.
 """
 
-import argparse
-import asyncio
-import json
 import os
-import math
-import time
-import re
 import sys
-import traceback
+import json
+import asyncio
+import logging
 from datetime import datetime
 from pathlib import Path
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from utils.browser_utils import setup_browser, handle_consent_dialog, take_screenshot
-    from utils.data_utils import save_json_to_file, format_timestamp
     from utils.supabase_utils import get_supabase_client
+    from utils.browser_utils import setup_browser, handle_consent_dialog, take_screenshot
+    from utils.data_utils import save_json_to_file
 except ImportError as e:
-    print(f"Import error: {e}")
-    # Fallback for direct script execution
+    logger.error(f"Import error: {e}")
+    # Try relative import as fallback
     try:
-        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-        from utils.browser_utils import setup_browser, handle_consent_dialog, take_screenshot
-        from utils.data_utils import save_json_to_file, format_timestamp
         from utils.supabase_utils import get_supabase_client
+        from utils.browser_utils import setup_browser, handle_consent_dialog, take_screenshot
+        from utils.data_utils import save_json_to_file
     except ImportError as e2:
-        print(f"Fallback import also failed: {e2}")
+        logger.error(f"Fallback import also failed: {e2}")
         sys.exit(1)
 
-from playwright.async_api import async_playwright
-
-
 class AntpoolWorkerScraper:
-    def __init__(self, access_key, observer_user_id, coin_type="BTC", output_dir=None, debug=False):
+    def __init__(self, access_key, observer_user_id, coin_type="BTC", output_dir=None):
         """Initialize the Antpool worker scraper with the given parameters."""
         self.access_key = access_key
         self.observer_user_id = observer_user_id
         self.coin_type = coin_type
         self.output_dir = output_dir or os.path.join(os.getcwd(), "output")
-        self.debug = debug
 
         # Create output directory
         os.makedirs(self.output_dir, exist_ok=True)
@@ -67,61 +63,40 @@ class AntpoolWorkerScraper:
 
     async def _setup_browser(self):
         """Set up the browser for scraping."""
-        print("\nLaunching browser...")
+        logger.info("Launching browser...")
         try:
-            playwright = await async_playwright().start()
-            print("Playwright started successfully")
-            
-            # Launch browser with debugging flags
-            browser_args = [
-                "--start-maximized",
-                "--disable-features=site-per-process",
-                "--disable-web-security",
-                "--disable-gpu"
-            ]
-            
-            self.browser = await playwright.chromium.launch(
-                headless=True,  # Use headless mode for server environments
-                args=browser_args,
-                timeout=60000,  # 60 second timeout for browser launch
-            )
-            print("Browser launched successfully")
-            
-            # Create page with specific viewport size for consistent screenshots
-            self.page = await self.browser.new_page(viewport={"width": 1280, "height": 1024})
-            self.page.set_default_timeout(60000)  # 60 second timeout for page operations
-            
-            print("Browser setup complete")
+            self.browser, self.page = await setup_browser(headless=True)
+            logger.info("Browser setup complete")
         except Exception as e:
-            print(f"CRITICAL ERROR launching browser: {str(e)}")
+            logger.error(f"CRITICAL ERROR launching browser: {str(e)}")
             raise
 
     async def handle_consent_dialog(self):
         """Handle the informed consent dialog."""
-        print("Handling consent dialog...")
+        logger.info("Handling consent dialog...")
         try:
             # Wait for the consent dialog to appear
             try:
                 await self.page.wait_for_selector("text=INFORMED CONSENT", timeout=5000)
-                print("Consent dialog found")
+                logger.info("Consent dialog found")
                 
                 # Try multiple approaches to dismiss the dialog
                 
                 # Approach 1: Click "Got it" button
                 try:
                     await self.page.click("text=Got it", timeout=3000)
-                    print("Clicked 'Got it' button")
+                    logger.info("Clicked 'Got it' button")
                     await asyncio.sleep(1)
                 except Exception as e:
-                    print(f"Could not click 'Got it' button: {str(e)}")
+                    logger.info(f"Could not click 'Got it' button: {str(e)}")
                 
                 # Approach 2: Click "Confirm" button
                 try:
                     await self.page.click("text=Confirm", timeout=3000)
-                    print("Clicked 'Confirm' button")
+                    logger.info("Clicked 'Confirm' button")
                     await asyncio.sleep(1)
                 except Exception as e:
-                    print(f"Could not click 'Confirm' button: {str(e)}")
+                    logger.info(f"Could not click 'Confirm' button: {str(e)}")
                 
                 # Approach 3: Use JavaScript to close the modal
                 try:
@@ -153,10 +128,10 @@ class AntpoolWorkerScraper:
                             });
                         }
                     ''')
-                    print("Used JavaScript to dismiss consent dialog")
+                    logger.info("Used JavaScript to dismiss consent dialog")
                     await asyncio.sleep(1)
                 except Exception as e:
-                    print(f"Could not use JavaScript to dismiss dialog: {str(e)}")
+                    logger.info(f"Could not use JavaScript to dismiss dialog: {str(e)}")
                 
                 # Verify the modal is gone
                 is_modal_gone = await self.page.evaluate('''
@@ -168,54 +143,54 @@ class AntpoolWorkerScraper:
                 ''')
                 
                 if is_modal_gone:
-                    print("Consent dialog successfully dismissed")
+                    logger.info("Consent dialog successfully dismissed")
                 else:
-                    print("Consent dialog may still be present")
+                    logger.info("Consent dialog may still be present")
                     
                     # Last resort: Press Escape key
                     try:
                         await self.page.keyboard.press('Escape')
-                        print("Pressed Escape key to dismiss dialog")
+                        logger.info("Pressed Escape key to dismiss dialog")
                         await asyncio.sleep(1)
                     except Exception as e:
-                        print(f"Could not press Escape key: {str(e)}")
+                        logger.info(f"Could not press Escape key: {str(e)}")
             except Exception as e:
-                print(f"No consent dialog found: {str(e)}")
+                logger.info(f"No consent dialog found: {str(e)}")
             
             # Check for cookie banner
             try:
                 await self.page.click("button.cookie-btn", timeout=3000)
-                print("Clicked cookie banner button")
+                logger.info("Clicked cookie banner button")
                 await asyncio.sleep(1)
             except Exception:
-                print("Cookie banner not found or already accepted")
+                logger.info("Cookie banner not found or already accepted")
                 
-            print("Consent dialog handling completed")
+            logger.info("Consent dialog handling completed")
         except Exception as e:
-            print(f"Error during consent dialog handling: {str(e)}")
+            logger.error(f"Error during consent dialog handling: {str(e)}")
 
     async def navigate_to_observer_page(self):
         """Navigate to the Antpool observer page."""
-        print(f"Navigating to observer page: {self.base_url}")
+        logger.info(f"Navigating to observer page: {self.base_url}")
         await self.page.goto(self.base_url, wait_until="networkidle")
-        print("Page loaded")
+        logger.info("Page loaded")
         
         # Handle consent dialog
-        await self.handle_consent_dialog()
+        await handle_consent_dialog(self.page)
 
-        print("Waiting for hashrate chart...")
+        logger.info("Waiting for hashrate chart...")
         # Wait for hashrate chart with retry logic
         max_retries = 3
         retry_delay = 5
         for attempt in range(max_retries):
             try:
                 await self.page.wait_for_selector("#hashrate-chart", timeout=45000)
-                print("Hashrate chart loaded successfully")
+                logger.info("Hashrate chart loaded successfully")
                 break
             except Exception as e:
-                print(f"Attempt {attempt + 1} failed: {e}")
+                logger.info(f"Attempt {attempt + 1} failed: {e}")
                 if attempt == max_retries - 1:
-                    print("Failed to load hashrate chart after multiple attempts")
+                    logger.error("Failed to load hashrate chart after multiple attempts")
                     raise
                 await asyncio.sleep(retry_delay)
                 
@@ -224,7 +199,7 @@ class AntpoolWorkerScraper:
 
     async def ensure_no_modals(self):
         """Ensure no modals are present on the page."""
-        print("Ensuring no modals are present...")
+        logger.info("Ensuring no modals are present...")
         try:
             # Use JavaScript to remove any modals
             await self.page.evaluate('''
@@ -246,14 +221,14 @@ class AntpoolWorkerScraper:
                     document.body.style.overflow = 'auto';
                 }
             ''')
-            print("Removed any modal elements")
+            logger.info("Removed any modal elements")
             await asyncio.sleep(1)
         except Exception as e:
-            print(f"Error ensuring no modals: {str(e)}")
+            logger.error(f"Error ensuring no modals: {str(e)}")
 
     async def navigate_to_worker_tab(self):
         """Navigate to the Worker tab."""
-        print("Navigating to Worker tab...")
+        logger.info("Navigating to Worker tab...")
         try:
             # First ensure no modals are present
             await self.ensure_no_modals()
@@ -288,37 +263,36 @@ class AntpoolWorkerScraper:
             ''')
             
             if worker_tab_clicked:
-                print("Clicked Worker tab using JavaScript")
+                logger.info("Clicked Worker tab using JavaScript")
             else:
-                print("Could not click Worker tab with JavaScript")
+                logger.info("Could not click Worker tab with JavaScript")
                 
                 # Try direct click approach
                 try:
                     await self.page.click("div.ivu-tabs-tab:nth-child(2)")
-                    print("Clicked second tab assuming it's Worker tab")
+                    logger.info("Clicked second tab assuming it's Worker tab")
                 except Exception as e:
-                    print(f"Could not click second tab: {str(e)}")
+                    logger.error(f"Could not click second tab: {str(e)}")
             
             # Wait for the click to take effect
             await asyncio.sleep(5)  # Increased wait time
             
             # Take screenshot after clicking Worker tab
-            if self.debug:
-                screenshot_path = os.path.join(self.output_dir, f"worker_tab_clicked_{self.observer_user_id}.png")
-                await self.page.screenshot(path=screenshot_path)
-                print(f"Screenshot saved after clicking Worker tab: {screenshot_path}")
+            screenshot_path = os.path.join(self.output_dir, "worker_tab_clicked.png")
+            await self.page.screenshot(path=screenshot_path)
+            logger.info(f"Screenshot saved after clicking Worker tab: {screenshot_path}")
             
             # Wait for worker table to load with retry logic and longer timeout
             max_retries = 5  # Increased retries
             for attempt in range(max_retries):
                 try:
                     await self.page.wait_for_selector("table", timeout=15000)  # Increased timeout
-                    print("Worker table loaded")
+                    logger.info("Worker table loaded")
                     break
                 except Exception as e:
-                    print(f"Attempt {attempt + 1} to find table failed: {e}")
+                    logger.info(f"Attempt {attempt + 1} to find table failed: {e}")
                     if attempt == max_retries - 1:
-                        print("Failed to find worker table after multiple attempts")
+                        logger.error("Failed to find worker table after multiple attempts")
                         raise
                     await asyncio.sleep(3)  # Increased wait between retries
                     
@@ -331,25 +305,25 @@ class AntpoolWorkerScraper:
             ''')
             
             if iframe_count > 0:
-                print(f"Found {iframe_count} iframes, checking for content")
+                logger.info(f"Found {iframe_count} iframes, checking for content")
                 
                 # Try to access iframe content
                 for i in range(iframe_count):
                     try:
                         frame = self.page.frames[i + 1]  # Skip main frame
                         if frame:
-                            print(f"Checking iframe {i+1}")
+                            logger.info(f"Checking iframe {i+1}")
                             # Try to find table in iframe
                             table_in_frame = await frame.evaluate('''
                                 () => document.querySelectorAll('table').length > 0
                             ''')
                             if table_in_frame:
-                                print(f"Found table in iframe {i+1}")
+                                logger.info(f"Found table in iframe {i+1}")
                                 # Use this frame for further operations
                                 self.frame = frame
                                 break
                     except Exception as e:
-                        print(f"Error checking iframe {i+1}: {str(e)}")
+                        logger.error(f"Error checking iframe {i+1}: {str(e)}")
             
             # Wait for any loading indicators to disappear
             try:
@@ -362,9 +336,9 @@ class AntpoolWorkerScraper:
                         );
                     }
                 ''', timeout=20000)
-                print("Loading indicators disappeared")
+                logger.info("Loading indicators disappeared")
             except Exception as e:
-                print(f"Loading indicators may still be present: {str(e)}")
+                logger.error(f"Loading indicators may still be present: {str(e)}")
             
             # Scroll to ensure all content is loaded
             await self.page.evaluate('''
@@ -389,693 +363,625 @@ class AntpoolWorkerScraper:
             await asyncio.sleep(2)
             
         except Exception as e:
-            print(f"Error navigating to Worker tab: {str(e)}")
-            if self.debug:
-                error_screenshot = os.path.join(self.output_dir, f"worker_tab_error_{self.observer_user_id}.png")
-                await self.page.screenshot(path=error_screenshot)
-                print(f"Saved error screenshot to {error_screenshot}")
+            logger.error(f"Error navigating to Worker tab: {str(e)}")
+            raise
 
-    async def set_workers_per_page(self, workers_per_page=80):
-        """Set the number of workers per page."""
-        print(f"Setting workers per page to {workers_per_page}...")
+    async def set_workers_per_page(self, page_size=80):
+        """Set the number of workers displayed per page."""
+        logger.info(f"Setting workers per page to {page_size}...")
         try:
-            # Try to find and click the page size selector
-            await self.page.evaluate(f'''
-                () => {{
-                    // Find the page size selector
-                    const selectors = Array.from(document.querySelectorAll('.ivu-page-options-sizer'));
-                    if (selectors.length > 0) {{
-                        selectors[0].click();
-                        return true;
-                    }}
-                    return false;
-                }}
+            # First ensure no modals are present
+            await self.ensure_no_modals()
+            
+            # Try to find and click the page size dropdown
+            try:
+                # Try to find the dropdown using various selectors
+                selectors = [
+                    ".ivu-page-options-sizer",
+                    ".ant-pagination-options-size-changer",
+                    "[class*='page-size']",
+                    "[class*='pageSize']",
+                    "select[class*='size']",
+                    ".ivu-select"
+                ]
+                
+                dropdown_clicked = False
+                for selector in selectors:
+                    try:
+                        await self.page.click(selector, timeout=3000)
+                        logger.info(f"Clicked page size dropdown using selector: {selector}")
+                        dropdown_clicked = True
+                        break
+                    except Exception:
+                        continue
+                
+                if not dropdown_clicked:
+                    # Try using JavaScript to find and click the dropdown
+                    dropdown_clicked = await self.page.evaluate('''
+                        () => {
+                            // Find elements that might be the page size dropdown
+                            const possibleDropdowns = Array.from(document.querySelectorAll(
+                                '.ivu-select, .ant-select, [class*="page-size"], [class*="pageSize"], select'
+                            ));
+                            
+                            // Try to find one that contains text like "10 / page"
+                            for (const dropdown of possibleDropdowns) {
+                                if (dropdown.textContent.match(/\\d+\\s*\\/\\s*page/) || 
+                                    dropdown.textContent.match(/\\d+\\s*per\\s*page/)) {
+                                    dropdown.click();
+                                    return true;
+                                }
+                            }
+                            
+                            // If not found, try clicking any dropdown-like element
+                            if (possibleDropdowns.length > 0) {
+                                possibleDropdowns[0].click();
+                                return true;
+                            }
+                            
+                            return false;
+                        }
+                    ''')
+                    
+                    if dropdown_clicked:
+                        logger.info("Clicked page size dropdown using JavaScript")
+                    else:
+                        logger.error("Could not find page size dropdown")
+                
+                # Wait for dropdown options to appear
+                await asyncio.sleep(2)
+                
+                # Try to select the desired page size
+                page_size_selected = False
+                
+                # Try direct click on the option
+                try:
+                    # Try various selectors for the option
+                    option_selectors = [
+                        f".ivu-select-dropdown .ivu-select-item:contains('{page_size}')",
+                        f".ant-select-dropdown .ant-select-item:contains('{page_size}')",
+                        f"[class*='select-dropdown'] [class*='select-item']:contains('{page_size}')",
+                        f"option[value='{page_size}']"
+                    ]
+                    
+                    for selector in option_selectors:
+                        try:
+                            await self.page.click(selector, timeout=3000)
+                            logger.info(f"Selected {page_size} workers per page using selector: {selector}")
+                            page_size_selected = True
+                            break
+                        except Exception:
+                            continue
+                except Exception as e:
+                    logger.info(f"Could not select page size directly: {str(e)}")
+                
+                if not page_size_selected:
+                    # Try using JavaScript to select the option
+                    page_size_selected = await self.page.evaluate(f'''
+                        () => {{
+                            // Find all dropdown options
+                            const options = Array.from(document.querySelectorAll(
+                                '.ivu-select-dropdown .ivu-select-item, ' +
+                                '.ant-select-dropdown .ant-select-item, ' +
+                                '[class*="select-dropdown"] [class*="select-item"], ' +
+                                'option'
+                            ));
+                            
+                            // Try to find the option with the desired page size
+                            for (const option of options) {{
+                                if (option.textContent.includes('{page_size}')) {{
+                                    option.click();
+                                    return true;
+                                }}
+                            }}
+                            
+                            return false;
+                        }}
+                    ''')
+                    
+                    if page_size_selected:
+                        logger.info(f"Selected {page_size} workers per page using JavaScript")
+                    else:
+                        logger.error(f"Could not select {page_size} workers per page")
+                
+                # Wait for the page to update
+                await asyncio.sleep(3)
+                
+                # Take screenshot after setting page size
+                screenshot_path = os.path.join(self.output_dir, f"page_size_{page_size}.png")
+                await self.page.screenshot(path=screenshot_path)
+                logger.info(f"Screenshot saved after setting page size: {screenshot_path}")
+                
+            except Exception as e:
+                logger.error(f"Error setting workers per page: {str(e)}")
+                
+        except Exception as e:
+            logger.error(f"Error setting workers per page: {str(e)}")
+
+    async def extract_worker_data(self):
+        """Extract worker data from the table."""
+        logger.info("Extracting worker data...")
+        try:
+            # First ensure no modals are present
+            await self.ensure_no_modals()
+            
+            # Get total number of workers
+            total_workers_text = await self.page.evaluate('''
+                () => {
+                    // Try to find text showing total workers
+                    const elements = Array.from(document.querySelectorAll('*'));
+                    for (const el of elements) {
+                        if (el.textContent && el.textContent.match(/Total\\s*:\\s*\\d+/)) {
+                            return el.textContent;
+                        }
+                    }
+                    return null;
+                }
             ''')
             
-            await asyncio.sleep(1)
+            total_workers = 0
+            if total_workers_text:
+                match = re.search(r'Total\s*:\s*(\d+)', total_workers_text)
+                if match:
+                    total_workers = int(match.group(1))
+                    logger.info(f"Total workers found: {total_workers}")
             
-            # Try to select the desired page size
-            size_selected = await self.page.evaluate(f'''
-                (size) => {{
-                    // Find all dropdown items
-                    const items = Array.from(document.querySelectorAll('.ivu-select-dropdown .ivu-select-item'));
-                    
-                    // Find and click the item with the desired page size
-                    const targetItem = items.find(item => item.textContent.trim() === size.toString());
-                    if (targetItem) {{
-                        targetItem.click();
-                        return true;
-                    }}
-                    return false;
-                }}
-            ''', workers_per_page)
-            
-            if size_selected:
-                print(f"Set page size to {workers_per_page}")
-                await asyncio.sleep(3)  # Wait for page to reload with new size
-            else:
-                print(f"Could not set page size to {workers_per_page}")
-        except Exception as e:
-            print(f"Error setting workers per page: {str(e)}")
-
-    async def get_worker_stats(self):
-        """Get worker statistics from the worker tab."""
-        print("Getting worker statistics...")
-        worker_stats = []
-        active_workers = 0
-        inactive_workers = 0
-        
-        # Determine total pages
-        total_pages = await self.page.evaluate('''
-            () => {
-                // Find pagination elements
-                const pagination = document.querySelector('.ivu-page');
-                if (!pagination) return 1;  // No pagination, only one page
-                
-                // Find the last page number
-                const pageItems = Array.from(document.querySelectorAll('.ivu-page-item'));
-                if (pageItems.length === 0) return 1;
-                
-                const lastPageItem = pageItems[pageItems.length - 1];
-                const lastPage = parseInt(lastPageItem.textContent.trim());
-                return isNaN(lastPage) ? 1 : lastPage;
-            }
-        ''')
-        
-        print(f"Found {total_pages} pages of workers")
-        
-        # Process each page
-        current_page = 1
-        while current_page <= total_pages:
-            print(f"Processing page {current_page} of {total_pages}")
-            
-            # Extract worker data from current page
-            page_worker_stats = await self.page.evaluate('''
+            # Extract worker data from the table
+            workers_data = await self.page.evaluate('''
                 () => {
                     const workers = [];
                     
-                    // Find the worker table
-                    const table = document.querySelector('table');
-                    if (!table) return workers;
+                    // Find the table
+                    const tables = document.querySelectorAll('table');
+                    if (tables.length === 0) return workers;
                     
-                    // Get all rows except header
-                    const rows = Array.from(table.querySelectorAll('tbody tr'));
+                    // Use the first table found
+                    const table = tables[0];
+                    
+                    // Get table rows (skip header row)
+                    const rows = table.querySelectorAll('tbody tr');
                     
                     // Process each row
-                    rows.forEach(row => {
-                        const cells = Array.from(row.querySelectorAll('td'));
-                        if (cells.length < 7) return;  // Skip rows with insufficient cells
+                    for (const row of rows) {
+                        const cells = row.querySelectorAll('td');
+                        if (cells.length < 5) continue;
                         
                         // Extract data from cells
-                        const worker = cells[0].textContent.trim();
-                        const tenMinHashrate = cells[1].textContent.trim();
-                        const oneHHashrate = cells[2].textContent.trim();
-                        const h24Hashrate = cells[3].textContent.trim();
-                        const rejectionRate = cells[4].textContent.trim();
-                        const lastShareTime = cells[5].textContent.trim();
-                        const connections24h = cells[6].textContent.trim();
+                        const worker = {
+                            worker_name: cells[0].textContent.trim(),
+                            ten_min_hashrate: cells[1].textContent.trim(),
+                            one_h_hashrate: cells[2].textContent.trim(),
+                            h24_hashrate: cells[3].textContent.trim(),
+                            rejection_rate: cells[4].textContent.trim(),
+                            last_share_time: cells[5].textContent.trim(),
+                            connections_24h: cells[6].textContent.trim()
+                        };
                         
-                        // Determine worker status based on last share time
-                        let status = "active";
-                        if (lastShareTime.toLowerCase().includes("never") || 
-                            lastShareTime.toLowerCase().includes("offline") ||
-                            (tenMinHashrate === "0 TH/s" && h24Hashrate === "0 TH/s")) {
-                            status = "inactive";
-                        }
-                        
-                        workers.push({
-                            worker,
-                            ten_min_hashrate: tenMinHashrate,
-                            one_h_hashrate: oneHHashrate,
-                            h24_hashrate: h24Hashrate,
-                            rejection_rate: rejectionRate,
-                            last_share_time: lastShareTime,
-                            connections_24h: connections24h,
-                            status
-                        });
-                    });
+                        workers.push(worker);
+                    }
                     
                     return workers;
                 }
             ''')
             
-            if page_worker_stats and len(page_worker_stats) > 0:
-                print(f"Found {len(page_worker_stats)} workers on page {current_page}")
+            if not workers_data or len(workers_data) == 0:
+                logger.warning("No worker data found in table, trying alternative extraction method")
                 
-                # Add timestamp and user info to each worker stat
-                for worker_stat in page_worker_stats:
-                    worker_stat["timestamp"] = format_timestamp()
-                    worker_stat["observer_user_id"] = self.observer_user_id
-                    worker_stat["coin_type"] = self.coin_type
-                    worker_stat["hashrate_chart"] = ""  # No chart data
-                    
-                    # Count active/inactive workers
-                    if worker_stat["status"] == "active":
-                        active_workers += 1
-                    else:
-                        inactive_workers += 1
-                
-                # Add to overall worker stats
-                worker_stats.extend(page_worker_stats)
-                
-                # Print progress update
-                print(f"Progress: {len(worker_stats)} workers extracted so far ({active_workers} active, {inactive_workers} inactive)")
-                
-                # Print first row for verification on first page
-                if current_page == 1 and worker_stats and len(worker_stats) > 0:
-                    print(f"First worker data sample:")
-                    print(f"  Worker: {worker_stats[0]['worker']}")
-                    print(f"  Status: {worker_stats[0]['status']}")
-                    print(f"  10-Min Hashrate: {worker_stats[0]['ten_min_hashrate']}")
-                    print(f"  1H Hashrate: {worker_stats[0]['one_h_hashrate']}")
-                    print(f"  24H Hashrate: {worker_stats[0]['h24_hashrate']}")
-                    print(f"  Rejection Rate: {worker_stats[0]['rejection_rate']}")
-                    print(f"  Last Share Time: {worker_stats[0]['last_share_time']}")
-                    print(f"  Connections/24H: {worker_stats[0]['connections_24h']}")
-            else:
-                print(f"No workers found on page {current_page}")
-                
-                # Try alternative approach - get raw table HTML
-                try:
-                    table_html = await self.page.evaluate('''
-                        () => {
-                            const table = document.querySelector('table');
-                            return table ? table.outerHTML : "";
-                        }
-                    ''')
-                    
-                    if table_html:
-                        print("Table HTML retrieved, but could not extract worker data")
-                        
-                        # Try to extract data from raw HTML as last resort
-                        rows = re.findall(r'<tr[^>]*>(.*?)</tr>', table_html, re.DOTALL)
-                        if rows and len(rows) > 1:  # Skip header row
-                            print(f"Found {len(rows) - 1} rows in HTML")
-                            
-                            for i in range(1, len(rows)):
-                                cells = re.findall(r'<td[^>]*>(.*?)</td>', rows[i], re.DOTALL)
-                                if cells and len(cells) >= 7:
-                                    extract_text = lambda cell: re.sub(r'<[^>]*>', '', cell).strip()
-                                    
-                                    # Determine worker status based on last share time
-                                    last_share_time = extract_text(cells[5])
-                                    ten_min_hashrate = extract_text(cells[1])
-                                    h24_hashrate = extract_text(cells[3])
-                                    
-                                    status = "active"
-                                    if (last_share_time.lower().find("never") >= 0 or 
-                                        last_share_time.lower().find("offline") >= 0 or
-                                        (ten_min_hashrate == "0 TH/s" and h24_hashrate == "0 TH/s")):
-                                        status = "inactive"
-                                    
-                                    worker_stat = {
-                                        "worker": extract_text(cells[0]),
-                                        "ten_min_hashrate": extract_text(cells[1]),
-                                        "one_h_hashrate": extract_text(cells[2]),
-                                        "h24_hashrate": extract_text(cells[3]),
-                                        "rejection_rate": extract_text(cells[4]),
-                                        "last_share_time": extract_text(cells[5]),
-                                        "connections_24h": extract_text(cells[6]),
-                                        "hashrate_chart": "",
-                                        "status": status,
-                                        "timestamp": format_timestamp(),
-                                        "observer_user_id": self.observer_user_id,
-                                        "coin_type": self.coin_type
-                                    }
-                                    worker_stats.append(worker_stat)
-                                    
-                                    # Count active/inactive workers
-                                    if status == "active":
-                                        active_workers += 1
-                                    else:
-                                        inactive_workers += 1
-                            
-                            if worker_stats:
-                                print(f"Extracted {len(worker_stats)} workers from HTML")
-                                print(f"Progress: {len(worker_stats)} workers extracted so far ({active_workers} active, {inactive_workers} inactive)")
-                                
-                                # Print first row for verification if this is the first data
-                                if len(worker_stats) > 0 and current_page == 1:
-                                    print(f"First worker data sample (from HTML):")
-                                    print(f"  Worker: {worker_stats[0]['worker']}")
-                                    print(f"  Status: {worker_stats[0]['status']}")
-                                    print(f"  10-Min Hashrate: {worker_stats[0]['ten_min_hashrate']}")
-                                    print(f"  1H Hashrate: {worker_stats[0]['one_h_hashrate']}")
-                                    print(f"  24H Hashrate: {worker_stats[0]['h24_hashrate']}")
-                                    print(f"  Rejection Rate: {worker_stats[0]['rejection_rate']}")
-                                    print(f"  Last Share Time: {worker_stats[0]['last_share_time']}")
-                                    print(f"  Connections/24H: {worker_stats[0]['connections_24h']}")
-                    else:
-                        print("No table found on the page")
-                        
-                        # Try to get table from iframe if present
-                        iframe_count = await self.page.evaluate('''
-                            () => document.querySelectorAll('iframe').length
-                        ''')
-                        
-                        if iframe_count > 0:
-                            print(f"Found {iframe_count} iframes, checking for content")
-                            
-                            for i in range(iframe_count):
-                                try:
-                                    frame = self.page.frames[i + 1]  # Skip main frame
-                                    if frame:
-                                        print(f"Checking iframe {i+1}")
-                                        # Try to find table in iframe
-                                        table_html = await frame.evaluate('''
-                                            () => {
-                                                const table = document.querySelector('table');
-                                                return table ? table.outerHTML : "";
-                                            }
-                                        ''')
-                                        
-                                        if table_html:
-                                            print(f"Found table in iframe {i+1}")
-                                            # Process table HTML from iframe
-                                            rows = re.findall(r'<tr[^>]*>(.*?)</tr>', table_html, re.DOTALL)
-                                            if rows and len(rows) > 1:  # Skip header row
-                                                print(f"Found {len(rows) - 1} rows in iframe HTML")
-                                                
-                                                for j in range(1, len(rows)):
-                                                    cells = re.findall(r'<td[^>]*>(.*?)</td>', rows[j], re.DOTALL)
-                                                    if cells and len(cells) >= 7:
-                                                        extract_text = lambda cell: re.sub(r'<[^>]*>', '', cell).strip()
-                                                        
-                                                        # Determine worker status based on last share time
-                                                        last_share_time = extract_text(cells[5])
-                                                        ten_min_hashrate = extract_text(cells[1])
-                                                        h24_hashrate = extract_text(cells[3])
-                                                        
-                                                        status = "active"
-                                                        if (last_share_time.lower().find("never") >= 0 or 
-                                                            last_share_time.lower().find("offline") >= 0 or
-                                                            (ten_min_hashrate == "0 TH/s" and h24_hashrate == "0 TH/s")):
-                                                            status = "inactive"
-                                                        
-                                                        worker_stat = {
-                                                            "worker": extract_text(cells[0]),
-                                                            "ten_min_hashrate": extract_text(cells[1]),
-                                                            "one_h_hashrate": extract_text(cells[2]),
-                                                            "h24_hashrate": extract_text(cells[3]),
-                                                            "rejection_rate": extract_text(cells[4]),
-                                                            "last_share_time": extract_text(cells[5]),
-                                                            "connections_24h": extract_text(cells[6]),
-                                                            "hashrate_chart": "",
-                                                            "status": status,
-                                                            "timestamp": format_timestamp(),
-                                                            "observer_user_id": self.observer_user_id,
-                                                            "coin_type": self.coin_type
-                                                        }
-                                                        worker_stats.append(worker_stat)
-                                                        
-                                                        # Count active/inactive workers
-                                                        if status == "active":
-                                                            active_workers += 1
-                                                        else:
-                                                            inactive_workers += 1
-                                                
-                                                if worker_stats:
-                                                    print(f"Extracted {len(worker_stats)} workers from iframe HTML")
-                                                    print(f"Progress: {len(worker_stats)} workers extracted so far ({active_workers} active, {inactive_workers} inactive)")
-                                                    break  # Stop checking other iframes
-                                except Exception as e:
-                                    print(f"Error checking iframe {i+1}: {str(e)}")
-                except Exception as e:
-                    print(f"Error getting table HTML: {str(e)}")
-            
-            # Go to next page if there are multiple pages
-            if current_page < total_pages:
-                # Ensure no modals are present before navigation
-                await self.ensure_no_modals()
-                
-                next_clicked = await self.page.evaluate('''
+                # Try alternative extraction method
+                workers_data = await self.page.evaluate('''
                     () => {
-                        // Find the next page button
-                        const nextButton = document.querySelector('li.ivu-page-next:not(.ivu-page-disabled)');
-                        if (nextButton) {
-                            nextButton.click();
-                            return true;
+                        const workers = [];
+                        
+                        // Find all elements that might contain worker data
+                        const elements = document.querySelectorAll('[class*="row"], [class*="item"], [class*="list-item"]');
+                        
+                        for (const el of elements) {
+                            // Check if this element contains worker data
+                            const text = el.textContent;
+                            if (!text.includes('TH/s') && !text.includes('PH/s')) continue;
+                            
+                            // Try to extract worker name and hashrates
+                            const workerNameEl = el.querySelector('[class*="name"], [class*="worker"], [class*="id"]');
+                            const hashrateEls = el.querySelectorAll('[class*="hashrate"], [class*="rate"]');
+                            
+                            if (workerNameEl && hashrateEls.length > 0) {
+                                const worker = {
+                                    worker_name: workerNameEl.textContent.trim(),
+                                    ten_min_hashrate: hashrateEls[0]?.textContent.trim() || 'N/A',
+                                    one_h_hashrate: hashrateEls[1]?.textContent.trim() || 'N/A',
+                                    h24_hashrate: hashrateEls[2]?.textContent.trim() || 'N/A',
+                                    rejection_rate: 'N/A',
+                                    last_share_time: 'N/A',
+                                    connections_24h: 'N/A'
+                                };
+                                
+                                workers.push(worker);
+                            }
                         }
+                        
+                        return workers;
+                    }
+                ''')
+            
+            logger.info(f"Extracted {len(workers_data)} workers from current page")
+            
+            # Process worker data
+            processed_workers = []
+            for worker in workers_data:
+                # Determine if worker is active based on last share time
+                is_active = True
+                if 'last_share_time' in worker and worker['last_share_time']:
+                    # If last share time is more than 24 hours ago, consider inactive
+                    try:
+                        last_share_time = worker['last_share_time']
+                        if 'day' in last_share_time.lower() or 'week' in last_share_time.lower():
+                            is_active = False
+                    except Exception:
+                        pass
+                
+                processed_worker = {
+                    'worker_name': worker.get('worker_name', 'Unknown'),
+                    'ten_min_hashrate': worker.get('ten_min_hashrate', 'N/A'),
+                    'one_h_hashrate': worker.get('one_h_hashrate', 'N/A'),
+                    'h24_hashrate': worker.get('h24_hashrate', 'N/A'),
+                    'rejection_rate': worker.get('rejection_rate', 'N/A'),
+                    'last_share_time': worker.get('last_share_time', 'N/A'),
+                    'connections_24h': worker.get('connections_24h', 'N/A'),
+                    'is_active': is_active,
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+                processed_workers.append(processed_worker)
+            
+            return processed_workers
+            
+        except Exception as e:
+            logger.error(f"Error extracting worker data: {str(e)}")
+            return []
+
+    async def navigate_to_next_page(self):
+        """Navigate to the next page of workers."""
+        logger.info("Navigating to next page...")
+        try:
+            # First ensure no modals are present
+            await self.ensure_no_modals()
+            
+            # Try to find and click the next page button
+            next_page_clicked = False
+            
+            # Try direct click on next page button
+            try:
+                await self.page.click("li.ivu-page-next", timeout=5000)
+                logger.info("Clicked next page button")
+                next_page_clicked = True
+            except Exception as e:
+                logger.info(f"Could not click next page button directly: {str(e)}")
+            
+            if not next_page_clicked:
+                # Try using JavaScript to click next page button
+                next_page_clicked = await self.page.evaluate('''
+                    () => {
+                        // Find elements that might be the next page button
+                        const nextButtons = Array.from(document.querySelectorAll(
+                            '.ivu-page-next, .ant-pagination-next, [class*="next"], [aria-label="Next Page"]'
+                        ));
+                        
+                        // Try to find one that's not disabled
+                        for (const button of nextButtons) {
+                            if (!button.classList.contains('disabled') && 
+                                !button.classList.contains('ivu-page-disabled') &&
+                                !button.hasAttribute('disabled')) {
+                                button.click();
+                                return true;
+                            }
+                        }
+                        
                         return false;
                     }
                 ''')
                 
-                if next_clicked:
-                    print(f"Navigated to page {current_page + 1}")
-                    await asyncio.sleep(5)  # Increased wait time for page to load
+                if next_page_clicked:
+                    logger.info("Clicked next page button using JavaScript")
                 else:
-                    print("Next page button not found or disabled")
-                    break
+                    logger.info("Could not find next page button or reached last page")
+                    return False
             
-            current_page += 1
-        
-        print(f"\n===== Worker Extraction Summary =====")
-        print(f"Total workers extracted: {len(worker_stats)}")
-        print(f"Active workers: {active_workers}")
-        print(f"Inactive workers: {inactive_workers}")
-        
-        # If no workers were found, create a placeholder entry
-        if not worker_stats:
-            print("No worker data extracted, creating placeholder entry")
-            worker_stats.append({
-                "worker": "No workers found",
-                "ten_min_hashrate": "0",
-                "one_h_hashrate": "0",
-                "h24_hashrate": "0",
-                "rejection_rate": "0",
-                "last_share_time": "",
-                "connections_24h": "0",
-                "hashrate_chart": "",
-                "status": "unknown",
-                "timestamp": format_timestamp(),
-                "observer_user_id": self.observer_user_id,
-                "coin_type": self.coin_type,
-                "note": "Data extraction failed, please check the website manually"
-            })
-        
-        return worker_stats
-
-    async def capture_worker_table_screenshot(self):
-        """Capture a screenshot of the worker table."""
-        if not self.debug:
-            return {"screenshot": None}
+            # Wait for the page to update
+            await asyncio.sleep(3)
             
-        try:
-            # Take screenshot of worker table
-            screenshot_path = os.path.join(
-                self.output_dir,
-                f"worker_table_{self.observer_user_id}_{datetime.now().strftime('%Y%m%d_%H%M')}.png"
-            )
-            await self.page.screenshot(path=screenshot_path)
-            print(f"Worker table screenshot saved to: {screenshot_path}")
-            return {"screenshot": screenshot_path}
+            # Check if navigation was successful
+            page_changed = await self.page.evaluate('''
+                () => {
+                    // Find the active page number
+                    const activePageEl = document.querySelector('.ivu-page-item-active, .ant-pagination-item-active');
+                    if (!activePageEl) return false;
+                    
+                    // Check if the active page number is greater than 1
+                    const pageNum = parseInt(activePageEl.textContent.trim());
+                    return !isNaN(pageNum) && pageNum > 1;
+                }
+            ''')
+            
+            if page_changed:
+                logger.info("Successfully navigated to next page")
+                return True
+            else:
+                logger.info("Navigation to next page failed or reached last page")
+                return False
+            
         except Exception as e:
-            print(f"Error capturing worker table screenshot: {str(e)}")
-            return {"screenshot": None}
+            logger.error(f"Error navigating to next page: {str(e)}")
+            return False
 
-    async def run(self):
-        """Run the worker scraper."""
+    async def scrape_workers(self):
+        """Scrape worker data from all pages."""
+        logger.info("Starting worker scraping process...")
         try:
+            # Set up browser
             await self._setup_browser()
+            
+            # Navigate to observer page
             await self.navigate_to_observer_page()
+            
+            # Take screenshot of dashboard
+            screenshot_path = os.path.join(self.output_dir, f"dashboard_{self.observer_user_id}.png")
+            await self.page.screenshot(path=screenshot_path)
+            logger.info(f"Dashboard screenshot saved to: {screenshot_path}")
             
             # Navigate to Worker tab
             await self.navigate_to_worker_tab()
             
+            # Take screenshot of worker tab
+            screenshot_path = os.path.join(self.output_dir, f"worker_tab_{self.observer_user_id}.png")
+            await self.page.screenshot(path=screenshot_path)
+            logger.info(f"Worker tab screenshot saved to: {screenshot_path}")
+            
             # Set workers per page to 80
             await self.set_workers_per_page(80)
             
-            # Get worker stats
-            worker_stats = await self.get_worker_stats()
+            # Extract worker data from all pages
+            all_workers = []
+            page_num = 1
             
-            # Save worker stats to file
-            current_time = datetime.now().strftime('%Y%m%d_%H%M')
-            output_file = os.path.join(
-                self.output_dir,
-                f"worker_stats_{self.observer_user_id}_{current_time}.json"
-            )
+            while True:
+                logger.info(f"Processing page {page_num}...")
+                
+                # Extract worker data from current page
+                workers = await self.extract_worker_data()
+                
+                if workers and len(workers) > 0:
+                    logger.info(f"Found {len(workers)} workers on page {page_num}")
+                    all_workers.extend(workers)
+                    
+                    # Print first worker data on first page for verification
+                    if page_num == 1 and len(workers) > 0:
+                        logger.info("First worker data sample:")
+                        logger.info(f"  Worker Name: {workers[0]['worker_name']}")
+                        logger.info(f"  10-Min Hashrate: {workers[0]['ten_min_hashrate']}")
+                        logger.info(f"  24H Hashrate: {workers[0]['h24_hashrate']}")
+                        logger.info(f"  Rejection Rate: {workers[0]['rejection_rate']}")
+                        logger.info(f"  Last Share Time: {workers[0]['last_share_time']}")
+                        logger.info(f"  Status: {'Active' if workers[0]['is_active'] else 'Inactive'}")
+                else:
+                    logger.warning(f"No workers found on page {page_num}")
+                    # If no workers found on first page, something is wrong
+                    if page_num == 1:
+                        logger.error("No workers found on first page, aborting")
+                        break
+                
+                # Navigate to next page
+                has_next_page = await self.navigate_to_next_page()
+                if not has_next_page:
+                    logger.info("No more pages to process")
+                    break
+                
+                page_num += 1
+                
+                # Limit to 10 pages as a safety measure
+                if page_num > 10:
+                    logger.warning("Reached maximum page limit (10), stopping")
+                    break
             
-            with open(output_file, 'w') as f:
-                json.dump(worker_stats, f, indent=2)
+            # Close browser
+            await self.browser.close()
             
-            print(f"Worker stats saved to: {output_file}")
+            # Count active and inactive workers
+            active_workers = sum(1 for worker in all_workers if worker['is_active'])
+            inactive_workers = len(all_workers) - active_workers
             
-            # Capture worker table screenshot
-            screenshot_info = await self.capture_worker_table_screenshot()
+            logger.info(f"Scraping completed. Total workers: {len(all_workers)}")
+            logger.info(f"Active workers: {active_workers}, Inactive workers: {inactive_workers}")
             
-            print("\n===== Worker Scraping Completed Successfully =====")
-            print(f"Account: {self.observer_user_id} ({self.coin_type})")
-            print(f"Total workers extracted: {len(worker_stats)}")
-            print(f"Worker stats saved to: {output_file}")
-            if screenshot_info["screenshot"]:
-                print(f"Worker table screenshot saved to: {screenshot_info['screenshot']}")
+            return all_workers
             
-            return {
-                "worker_stats": worker_stats,
-                "worker_stats_file": output_file,
-                "screenshot": screenshot_info["screenshot"],
-                "worker_count": len(worker_stats)
-            }
         except Exception as e:
-            print(f"Error during worker scraping: {str(e)}")
-            print(traceback.format_exc())
-            return {
-                "error": str(e),
-                "worker_stats": [],
-                "worker_stats_file": None,
-                "screenshot": None,
-                "worker_count": 0
-            }
-        finally:
+            logger.error(f"Error during worker scraping: {str(e)}")
             if self.browser:
                 await self.browser.close()
-                print("Browser closed")
+            return []
 
+    async def save_to_file(self, workers):
+        """Save worker data to a JSON file."""
+        if not workers:
+            logger.warning("No worker data to save")
+            return None
+        
+        try:
+            # Create timestamp for filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+            
+            # Create filename
+            filename = f"{timestamp}_{self.observer_user_id}_{self.coin_type}_workers.json"
+            filepath = os.path.join(self.output_dir, filename)
+            
+            # Save to file
+            with open(filepath, 'w') as f:
+                json.dump(workers, f, indent=2)
+            
+            logger.info(f"Worker data saved to {filepath}")
+            return filepath
+            
+        except Exception as e:
+            logger.error(f"Error saving worker data to file: {str(e)}")
+            return None
 
-async def save_to_supabase(supabase, workers_data):
-    """Save worker data to Supabase."""
-    if not workers_data:
-        print("No worker data to save to Supabase")
-        return False
+    async def upload_to_supabase(self, workers, supabase):
+        """Upload worker data to Supabase."""
+        if not workers:
+            logger.warning("No worker data to upload to Supabase")
+            return 0
+        
+        try:
+            logger.info(f"Uploading {len(workers)} workers to Supabase...")
+            
+            # Prepare data for upload
+            upload_data = []
+            for worker in workers:
+                # Extract numeric values from hashrates
+                ten_min_hashrate = worker['ten_min_hashrate']
+                one_h_hashrate = worker['one_h_hashrate']
+                h24_hashrate = worker['h24_hashrate']
+                rejection_rate = worker['rejection_rate']
+                
+                # Extract numeric values using regex
+                ten_min_value = re.search(r'([\d.]+)', ten_min_hashrate)
+                one_h_value = re.search(r'([\d.]+)', one_h_hashrate)
+                h24_value = re.search(r'([\d.]+)', h24_hashrate)
+                rejection_value = re.search(r'([\d.]+)', rejection_rate)
+                
+                # Prepare record for Supabase
+                record = {
+                    'worker_name': worker['worker_name'],
+                    'ten_min_hashrate': ten_min_value.group(1) if ten_min_value else '0',
+                    'one_h_hashrate': one_h_value.group(1) if one_h_value else '0',
+                    'h24_hashrate': h24_value.group(1) if h24_value else '0',
+                    'rejection_rate': rejection_value.group(1) if rejection_value else '0',
+                    'last_share_time': worker['last_share_time'],
+                    'connections_24h': worker['connections_24h'],
+                    'is_active': worker['is_active'],
+                    'user_id': self.observer_user_id,
+                    'coin_type': self.coin_type,
+                    'created_at': datetime.now().isoformat()
+                }
+                
+                upload_data.append(record)
+            
+            # Upload in batches to avoid request size limits
+            batch_size = 10
+            total_uploaded = 0
+            
+            for i in range(0, len(upload_data), batch_size):
+                batch = upload_data[i:i+batch_size]
+                logger.info(f"Uploading batch {i//batch_size + 1}/{(len(upload_data) + batch_size - 1)//batch_size} ({len(batch)} workers)")
+                
+                try:
+                    # Upload batch to Supabase
+                    response = supabase.table("mining_workers").insert(batch).execute()
+                    
+                    # Check for errors
+                    if hasattr(response, 'error') and response.error:
+                        logger.error(f"Error uploading batch to Supabase: {response.error}")
+                    else:
+                        total_uploaded += len(batch)
+                        logger.info(f"Successfully uploaded batch of {len(batch)} workers")
+                        
+                except Exception as e:
+                    logger.error(f"Error uploading batch to Supabase: {str(e)}")
+                    
+                    # Try uploading records individually
+                    logger.info("Trying to upload records individually...")
+                    for record in batch:
+                        try:
+                            response = supabase.table("mining_workers").insert(record).execute()
+                            if hasattr(response, 'error') and response.error:
+                                logger.error(f"Error uploading record to Supabase: {response.error}")
+                            else:
+                                total_uploaded += 1
+                                logger.info(f"Successfully uploaded individual record")
+                        except Exception as e2:
+                            logger.error(f"Error uploading individual record to Supabase: {str(e2)}")
+            
+            logger.info(f"Supabase upload completed. Total records uploaded: {total_uploaded}/{len(workers)}")
+            return total_uploaded
+            
+        except Exception as e:
+            logger.error(f"Error uploading worker data to Supabase: {str(e)}")
+            return 0
+
+async def scrape_workers(access_key, observer_user_id, coin_type="BTC", output_dir=None):
+    """Scrape worker data from Antpool."""
+    logger.info(f"Starting worker scraping for {observer_user_id} ({coin_type})...")
     
     try:
-        # Use batch insert for better performance (max 1000 records per batch)
-        batch_size = 100
-        total_workers = len(workers_data)
-        success_count = 0
+        # Create scraper instance
+        scraper = AntpoolWorkerScraper(access_key, observer_user_id, coin_type, output_dir)
         
-        print(f"\n===== Uploading {total_workers} Workers to Supabase =====")
-        print(f"Using batch size of {batch_size} workers per request")
+        # Scrape workers
+        workers = await scraper.scrape_workers()
         
-        for i in range(0, total_workers, batch_size):
-            batch = workers_data[i:i+batch_size]
-            batch_num = i//batch_size + 1
-            total_batches = (total_workers+batch_size-1)//batch_size
-            print(f"Uploading batch {batch_num}/{total_batches} ({len(batch)} workers)")
-            
-            try:
-                result = supabase.table("mining_workers").insert(batch).execute()
-                if hasattr(result, 'data') and result.data:
-                    success_count += len(batch)
-                    print(f"✅ Successfully uploaded batch {batch_num}/{total_batches}")
-                else:
-                    print(f"❌ Error uploading batch {batch_num}/{total_batches}: {result}")
-            except Exception as batch_error:
-                print(f"❌ Error uploading batch {batch_num}/{total_batches}: {batch_error}")
-                # Fall back to individual inserts for this batch
-                print(f"Falling back to individual inserts for batch {batch_num}")
-                batch_success = 0
-                
-                for worker in batch:
-                    try:
-                        result = supabase.table("mining_workers").insert(worker).execute()
-                        if hasattr(result, 'data') and result.data:
-                            success_count += 1
-                            batch_success += 1
-                        else:
-                            print(f"❌ Error saving worker {worker['worker']}")
-                    except Exception as worker_error:
-                        print(f"❌ Error saving worker {worker['worker']}: {str(worker_error)[:100]}...")
-                
-                print(f"Individual inserts: {batch_success}/{len(batch)} workers saved successfully")
-        
-        print(f"\n===== Supabase Upload Summary =====")
-        print(f"Total workers: {total_workers}")
-        print(f"Successfully uploaded: {success_count}")
-        print(f"Failed: {total_workers - success_count}")
-        
-        if total_workers > 0:
-            success_rate = (success_count / total_workers) * 100
-            print(f"Success rate: {success_rate:.1f}%")
-        
-        return success_count > 0
-    except Exception as e:
-        print(f"❌ Error saving to Supabase: {e}")
-        print(traceback.format_exc())
-        return False
-
-
-async def process_account(browser, output_dir, supabase, account, debug=False):
-    """Process a single account."""
-    try:
-        # Extract account details
-        account_name = account.get("account_name", "Unknown")
-        access_key = account.get("access_key", "")
-        user_id = account.get("user_id", "")
-        coin_type = account.get("coin_type", "BTC")
-        
-        print(f"\n===== Processing account: {account_name} ({user_id}) =====")
-        
-        # Skip if missing required fields
-        if not access_key or not user_id:
-            print(f"❌ Skipping account {account_name}: Missing required fields")
+        if not workers:
+            logger.error("No worker data scraped")
             return False
         
-        # Create a new page for this account
-        page = await browser.new_page()
-        page.set_default_timeout(60000)  # 60 second timeout for all operations
+        # Save to file
+        filepath = await scraper.save_to_file(workers)
         
-        try:
-            # Initialize scraper
-            scraper = AntpoolWorkerScraper(
-                access_key=access_key,
-                observer_user_id=user_id,
-                coin_type=coin_type,
-                output_dir=output_dir,
-                debug=debug
-            )
-            
-            # Set browser and page
-            scraper.browser = browser
-            scraper.page = page
-            
-            # Run scraper
-            result = await scraper.run()
-            
-            # Save to Supabase
-            if supabase and result.get("worker_stats"):
-                await save_to_supabase(supabase, result["worker_stats"])
-            
-            # Update last_scraped_at in account_credentials
-            if supabase:
-                try:
-                    supabase.table("account_credentials").update({"last_scraped_at": format_timestamp()}).eq("user_id", user_id).execute()
-                    print(f"✅ Updated last_scraped_at for {user_id}")
-                except Exception as e:
-                    print(f"❌ Error updating last_scraped_at: {e}")
-            
-            print(f"✅ Successfully processed account: {account_name}")
-            return True
-            
-        finally:
-            # Close the page
-            await page.close()
-            
+        # Get Supabase client
+        supabase = get_supabase_client()
+        
+        # Upload to Supabase
+        uploaded = await scraper.upload_to_supabase(workers, supabase)
+        
+        logger.info(f"Worker scraping completed for {observer_user_id}. Scraped: {len(workers)}, Uploaded: {uploaded}")
+        return True
+        
     except Exception as e:
-        print(f"❌ Error processing account {account.get('account_name', 'Unknown')}: {e}")
-        print(traceback.format_exc())
+        logger.error(f"Error during worker scraping: {str(e)}")
         return False
 
-
-async def fetch_accounts_from_supabase(supabase):
-    """Fetch accounts from Supabase."""
+async def main():
+    """Main function to run the scraper."""
+    # Create output directory
+    output_dir = os.path.join(os.getcwd(), "output")
+    os.makedirs(output_dir, exist_ok=True)
+    
     try:
-        # First try using the RPC function
-        try:
-            print("Attempting to fetch accounts using RPC function...")
-            response = supabase.rpc('get_all_active_accounts').execute()
-            accounts = response.data
-            if accounts:
-                print(f"✅ Successfully fetched {len(accounts)} accounts using RPC function")
-                return accounts
-        except Exception as rpc_error:
-            print(f"❌ Error fetching accounts using RPC function: {rpc_error}")
-            # Continue to fallback method
-        
-        # Fallback: direct query
-        print("Falling back to direct query...")
-        response = supabase.table("account_credentials").select("*").eq("is_active", True).order("priority.desc,last_scraped_at.asc.nullsfirst").execute()
-        accounts = response.data
-        print(f"✅ Successfully fetched {len(accounts)} accounts using direct query")
-        return accounts
-        
-    except Exception as e:
-        print(f"❌ Error fetching accounts from Supabase: {e}")
-        print(traceback.format_exc())
-        return []
-
-
-async def main_async(args):
-    """Main async function."""
-    print("\n===== Starting Antpool Worker Scraper =====")
-    print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(args.output_dir, exist_ok=True)
-    print(f"Output directory: {args.output_dir}")
-    
-    # Initialize Supabase client
-    supabase = None
-    if not args.skip_supabase:
+        # Get Supabase client
         supabase = get_supabase_client()
-        if not supabase:
-            print("❌ Failed to initialize Supabase client")
-            return 1
-    
-    # Get accounts to scrape
-    accounts = []
-    if args.access_key and args.user_id:
-        # Use command-line arguments
-        accounts = [{
-            "account_name": args.user_id,
-            "access_key": args.access_key,
-            "user_id": args.user_id,
-            "coin_type": args.coin_type
-        }]
-        print(f"Using command-line account: {args.user_id}")
-    elif supabase:
+        
         # Fetch accounts from Supabase
-        accounts = await fetch_accounts_from_supabase(supabase)
-    
-    if not accounts:
-        print("❌ No accounts to scrape. Exiting.")
-        return 1
-    
-    print(f"Found {len(accounts)} accounts to scrape")
-    
-    # Initialize browser
-    print("Initializing browser...")
-    browser = await setup_browser(headless=True)
-    print("✅ Browser initialized successfully")
-    
-    try:
+        logger.info("Fetching accounts from Supabase...")
+        try:
+            response = supabase.table("account_credentials").select("*").eq("is_active", True).execute()
+            accounts = response.data
+            logger.info(f"Found {len(accounts)} active accounts")
+        except Exception as e:
+            logger.error(f"Error fetching accounts from Supabase: {str(e)}")
+            return
+        
         # Process each account
-        results = []
-        for i, account in enumerate(accounts):
-            print(f"\n===== Processing Account {i+1}/{len(accounts)} =====")
-            result = await process_account(browser, args.output_dir, supabase, account, args.debug)
-            results.append(result)
+        for account in accounts:
+            logger.info(f"Processing account: {account['user_id']} ({account['coin_type']})")
+            
+            # Scrape workers for this account
+            result = await scrape_workers(
+                account["access_key"],
+                account["user_id"],
+                account["coin_type"],
+                output_dir
+            )
+            
+            if result:
+                logger.info(f"Successfully scraped workers for {account['user_id']}")
+            else:
+                logger.error(f"Failed to scrape workers for {account['user_id']}")
+            
+            # Wait between accounts to avoid rate limiting
+            await asyncio.sleep(5)
         
-        # Print summary
-        success_count = sum(1 for r in results if r)
-        print("\n===== Worker Scraper Summary =====")
-        print(f"Total accounts processed: {len(accounts)}")
-        print(f"Successful: {success_count}")
-        print(f"Failed: {len(accounts) - success_count}")
+        logger.info("All accounts processed")
         
-        if len(accounts) > 0:
-            success_rate = (success_count / len(accounts)) * 100
-            print(f"Success rate: {success_rate:.1f}%")
-        
-        print(f"Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        return 0
-    finally:
-        # Close browser
-        await browser.close()
-        print("Browser closed")
-
-
-def main():
-    """Main function."""
-    parser = argparse.ArgumentParser(description="Antpool Worker Scraper - Multi-Account Version")
-    parser.add_argument("--access_key", help="Antpool access key (optional if using Supabase)")
-    parser.add_argument("--user_id", help="Antpool observer user ID (optional if using Supabase)")
-    parser.add_argument("--coin_type", default="BTC", help="Coin type (default: BTC)")
-    parser.add_argument("--output_dir", default="./output", help="Output directory for JSON and screenshots")
-    parser.add_argument("--skip_supabase", action="store_true", help="Skip Supabase integration")
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
-    
-    args = parser.parse_args()
-    
-    # Run async main
-    try:
-        return asyncio.run(main_async(args))
     except Exception as e:
-        print(f"❌ Error in main: {e}")
-        print(traceback.format_exc())
-        return 1
-
+        logger.error(f"Error in main function: {str(e)}")
 
 if __name__ == "__main__":
-    sys.exit(main())
+    asyncio.run(main())
