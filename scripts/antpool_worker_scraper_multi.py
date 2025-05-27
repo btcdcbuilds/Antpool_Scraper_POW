@@ -1,364 +1,314 @@
+#!/usr/bin/env python3
+"""
+Antpool Worker Scraper - Multi-Account Version
+
+This script scrapes worker statistics from Antpool for multiple accounts
+stored in Supabase.
+"""
+
 import os
 import sys
 import json
-import asyncio
 import argparse
+import asyncio
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+import traceback
+from pathlib import Path
 
-from playwright.async_api import async_playwright
-import requests
-from supabase import create_client, Client
+# Add parent directory to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Import utility modules
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from utils.browser_utils import setup_browser, handle_consent_dialog
-from utils.data_utils import save_json_data
-from utils.supabase_utils import save_worker_stats
+try:
+    from utils.browser_utils import setup_browser, handle_cookie_consent, take_screenshot
+    from utils.data_utils import save_json_to_file, format_timestamp
+    from utils.supabase_utils import get_supabase_client
+except ImportError:
+    # Fallback for direct script execution
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    from utils.browser_utils import setup_browser, handle_cookie_consent, take_screenshot
+    from utils.data_utils import save_json_to_file, format_timestamp
+    from utils.supabase_utils import get_supabase_client
 
-class AntpoolMultiAccountScraper:
-    """Base class for Antpool multi-account scrapers."""
+async def scrape_workers(page, access_key, user_id, coin_type, debug=False):
+    """Scrape worker statistics from Antpool."""
+    print(f"Scraping workers for {user_id} ({coin_type})...")
     
-    def __init__(self, output_dir: str, single_account: bool = False, 
-                 access_key: Optional[str] = None, user_id: Optional[str] = None, 
-                 coin_type: Optional[str] = None):
-        """Initialize the scraper with output directory and optional account details."""
-        self.output_dir = output_dir
-        self.single_account = single_account
-        self.access_key = access_key
-        self.user_id = user_id
-        self.coin_type = coin_type or "BTC"
-        
-        # Create output directory if it doesn't exist
-        os.makedirs(self.output_dir, exist_ok=True)
-        
-        # Initialize Supabase client if environment variables are set
-        self.supabase_url = os.environ.get("SUPABASE_URL")
-        self.supabase_key = os.environ.get("SUPABASE_KEY")
-        self.supabase = None
-        
-        if self.supabase_url and self.supabase_key:
-            self.supabase = create_client(self.supabase_url, self.supabase_key)
-            print(f"Supabase client initialized with URL: {self.supabase_url}")
-        else:
-            print("Supabase environment variables not set. Database operations will be skipped.")
+    # Navigate to observer page
+    observer_url = f"https://www.antpool.com/observer?accessKey={access_key}&coinType={coin_type}&observerUserId={user_id}"
+    await page.goto(observer_url, wait_until="networkidle")
+    print(f"Navigated to observer page for {user_id}")
     
-    async def get_accounts(self) -> List[Dict[str, Any]]:
-        """Get all active accounts from Supabase or use the provided account."""
-        if self.single_account:
-            if not self.access_key or not self.user_id:
-                raise ValueError("access_key and user_id must be provided when single_account is True")
-            
-            return [{
-                "account_name": self.user_id,
-                "access_key": self.access_key,
-                "user_id": self.user_id,
-                "coin_type": self.coin_type
-            }]
-        
-        if not self.supabase:
-            raise ValueError("Supabase client not initialized. Cannot fetch accounts.")
-        
-        try:
-            # Call the get_all_active_accounts function
-            response = self.supabase.rpc('get_all_active_accounts').execute()
-            
-            if hasattr(response, 'data') and response.data:
-                print(f"Found {len(response.data)} active accounts")
-                return response.data
-            else:
-                print("No active accounts found in Supabase")
-                return []
-        except Exception as e:
-            print(f"Error fetching accounts from Supabase: {e}")
-            return []
+    # Handle cookie consent if needed
+    await handle_cookie_consent(page)
     
-    async def update_last_scraped(self, account_id: int) -> None:
-        """Update the last_scraped_at timestamp for an account."""
-        if not self.supabase:
-            return
-        
-        try:
-            self.supabase.table('account_credentials').update({
-                "last_scraped_at": datetime.now().isoformat()
-            }).eq('id', account_id).execute()
-            
-            print(f"Updated last_scraped_at for account ID {account_id}")
-        except Exception as e:
-            print(f"Error updating last_scraped_at: {e}")
+    # Navigate to workers page
+    await page.click('text="Workers"')
+    print("Navigated to workers page")
     
-    async def scrape_account(self, account: Dict[str, Any]) -> None:
-        """Scrape a single account. To be implemented by subclasses."""
-        raise NotImplementedError("Subclasses must implement scrape_account method")
+    # Wait for workers table to load
+    await page.wait_for_selector(".ant-table-wrapper", timeout=30000)
+    print("Workers table loaded")
     
-    async def run(self) -> int:
-        """Run the scraper for all accounts."""
-        try:
-            accounts = await self.get_accounts()
-            
-            if not accounts:
-                print("No accounts to scrape. Exiting.")
-                return 1
-            
-            print(f"Starting scraping for {len(accounts)} accounts")
-            
-            for account in accounts:
-                print(f"Scraping account: {account['account_name']}")
-                try:
-                    await self.scrape_account(account)
-                    
-                    # Update last_scraped_at if not in single account mode
-                    if not self.single_account and 'id' in account:
-                        await self.update_last_scraped(account['id'])
-                except Exception as e:
-                    print(f"Error scraping account {account['account_name']}: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
-            print("All accounts scraped successfully")
-            return 0
-        except Exception as e:
-            print(f"Error in run method: {e}")
-            import traceback
-            traceback.print_exc()
-            return 1
-
-class AntpoolWorkerScraper(AntpoolMultiAccountScraper):
-    """Scraper for Antpool worker statistics."""
+    # Extract worker data
+    workers_data = []
     
-    async def extract_worker_stats(self, page, output_dir, observer_user_id, coin_type):
-        """Extract worker statistics from the worker tab."""
-        print("Extracting worker statistics...")
+    try:
+        # Get table rows
+        rows = await page.query_selector_all(".ant-table-tbody tr")
+        print(f"Found {len(rows)} worker rows")
         
-        # Ensure no modals are present
-        print("Ensuring no modals are present...")
-        await page.evaluate("""() => {
-            document.querySelectorAll('.ant-modal-close').forEach(el => el.click());
-            document.querySelectorAll('.ant-modal-mask').forEach(el => el.remove());
-            document.querySelectorAll('.ant-modal-wrap').forEach(el => el.remove());
-        }""")
-        print("Removed any modal elements")
-        
-        # Set page size to 50
-        print("Setting page size to 50...")
-        await page.locator('.ant-select-selection-item').click()
-        await page.locator('div[title="50 / page"]').click()
-        print("Selected page size 50")
-        
-        # Wait for table to update
-        await asyncio.sleep(2)
-        
-        # Capture worker table screenshot
-        print("Capturing worker table screenshot...")
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        screenshot_path = os.path.join(output_dir, f"{timestamp}_{observer_user_id}_Antpool_{coin_type}_workers.png")
-        await page.screenshot(path=screenshot_path, full_page=True)
-        print(f"Worker table screenshot saved to: {screenshot_path}")
-        
-        # Get total pages
-        total_text = await page.locator('.ant-pagination-total-text').text_content()
-        import re
-        total_items_match = re.search(r'Total (\d+) items', total_text)
-        total_items = int(total_items_match.group(1)) if total_items_match else 0
-        total_pages = (total_items + 49) // 50  # Ceiling division
-        
-        print(f"Total workers: {total_items}, total pages: {total_pages}")
-        
-        all_workers = []
-        
-        # Process each page
-        for page_num in range(1, total_pages + 1):
-            print(f"Processing page {page_num} of {total_pages}")
-            
-            # Ensure no modals are present
-            print("Ensuring no modals are present...")
-            await page.evaluate("""() => {
-                document.querySelectorAll('.ant-modal-close').forEach(el => el.click());
-                document.querySelectorAll('.ant-modal-mask').forEach(el => el.remove());
-                document.querySelectorAll('.ant-modal-wrap').forEach(el => el.remove());
-            }""")
-            print("Removed any modal elements")
-            
-            # Get table rows
-            rows = await page.locator('table tbody tr').all()
-            print(f"Found {len(rows)} rows in table")
-            
-            # Save table screenshot for debugging
-            table_screenshot_path = os.path.join(output_dir, f"worker_table_page{page_num}.png")
-            await page.locator('table').screenshot(path=table_screenshot_path)
-            print(f"Table screenshot saved to: {table_screenshot_path}")
-            
-            # Save table HTML for debugging
-            table_html = await page.locator('table').evaluate("el => el.outerHTML")
-            table_html_path = os.path.join(output_dir, f"table_html_page{page_num}.html")
-            with open(table_html_path, 'w', encoding='utf-8') as f:
+        # Debug: Save table HTML if requested
+        if debug:
+            table_html = await page.evaluate('() => document.querySelector(".ant-table-wrapper").outerHTML')
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "debug", "table_html_page1.html"), "w") as f:
                 f.write(table_html)
-            print(f"Table HTML saved to: {table_html_path}")
-            
-            # Extract worker data from rows
-            worker_data = []
-            
-            for row in rows:
-                try:
-                    # Skip header rows or empty rows
-                    if await row.locator('td').count() < 7:
-                        continue
-                    
-                    # Get all cells in the row
-                    cells = await row.locator('td').all()
-                    
-                    # Extract worker name from the third column (index 2)
-                    worker_cell = cells[2]
-                    worker_name = await worker_cell.text_content()
-                    
-                    # Clean up worker name
-                    worker_name = worker_name.strip()
-                    if "Click to view" in worker_name:
-                        # Try to extract just the IP-like part
-                        worker_name = worker_name.split("Click to view")[0].strip()
-                    
-                    # Extract other worker data
-                    ten_min_hashrate = await cells[3].text_content() if len(cells) > 3 else ""
-                    one_h_hashrate = await cells[4].text_content() if len(cells) > 4 else ""
-                    h24_hashrate = await cells[5].text_content() if len(cells) > 5 else ""
-                    rejection_rate = await cells[6].text_content() if len(cells) > 6 else ""
-                    last_share_time = await cells[7].text_content() if len(cells) > 7 else ""
-                    connections_24h = await cells[8].text_content() if len(cells) > 8 else ""
-                    
-                    # Create worker data dictionary
-                    worker_data_item = {
-                        "worker": worker_name,
-                        "ten_min_hashrate": ten_min_hashrate.strip(),
-                        "one_h_hashrate": one_h_hashrate.strip(),
-                        "h24_hashrate": h24_hashrate.strip(),
-                        "rejection_rate": rejection_rate.strip(),
-                        "last_share_time": last_share_time.strip(),
-                        "connections_24h": connections_24h.strip(),
-                        "hashrate_chart": "",
-                        "status": "active",
-                        "timestamp": datetime.now().isoformat(),
-                        "observer_user_id": observer_user_id,
-                        "coin_type": coin_type
-                    }
-                    
-                    worker_data.append(worker_data_item)
-                except Exception as e:
-                    print(f"Error extracting data from row: {e}")
-            
-            # Save worker rows debug info
-            debug_path = os.path.join(output_dir, f"worker_rows_debug_page{page_num}.json")
-            with open(debug_path, 'w', encoding='utf-8') as f:
-                json.dump(worker_data, f, indent=2)
-            print(f"Worker rows debug info saved to: {debug_path}")
-            
-            print(f"Found {len(worker_data)} workers on page {page_num}")
-            if worker_data:
-                print(f"First worker data: {worker_data[0]}")
-            
-            all_workers.extend(worker_data)
-            
-            # Navigate to next page if not on the last page
-            if page_num < total_pages:
-                print(f"Navigating to page {page_num + 1}...")
-                await page.locator('button.ant-pagination-item-link[aria-label="Next page"]').click()
-                await asyncio.sleep(2)  # Wait for page to load
+            print("Saved table HTML for debugging")
         
-        print(f"Total workers extracted: {len(all_workers)}")
-        return all_workers, screenshot_path
-    
-    async def scrape_account(self, account: Dict[str, Any]) -> None:
-        """Scrape worker statistics for a single account."""
-        access_key = account['access_key']
-        user_id = account['user_id']
-        coin_type = account.get('coin_type', 'BTC')
-        account_name = account.get('account_name', user_id)
-        
-        print(f"Scraping worker statistics for account {account_name} ({coin_type})...")
-        
-        async with async_playwright() as playwright:
-            # Launch browser
-            print("Launching browser...")
-            browser, context, page = await setup_browser(playwright)
-            
+        # Process each row
+        for row_idx, row in enumerate(rows):
             try:
-                # Navigate to observer page
-                observer_url = f"https://www.antpool.com/observer?accessKey={access_key}&coinType={coin_type}&observerUserId={user_id}"
-                print(f"Navigating to observer page: {observer_url}")
-                await page.goto(observer_url)
-                print("Page loaded")
+                # Extract cells
+                cells = await row.query_selector_all("td")
                 
-                # Handle consent dialog
-                print("Handling consent dialog...")
-                await handle_consent_dialog(page)
-                print("Consent dialog handling completed")
+                if len(cells) < 7:
+                    print(f"Skipping row {row_idx+1}: Not enough cells ({len(cells)})")
+                    continue
                 
-                # Wait for hashrate chart to load
-                print("Waiting for hashrate chart...")
-                await page.wait_for_selector(".ant-card-body", timeout=30000)
-                print("Hashrate chart loaded successfully")
+                # Extract worker name (in the third column, index 2)
+                worker_cell = cells[2]
+                worker_name_element = await worker_cell.query_selector("a")
                 
-                # Extract worker statistics
-                workers, screenshot_path = await self.extract_worker_stats(
-                    page, self.output_dir, account_name, coin_type
-                )
+                if worker_name_element:
+                    worker_name = await worker_name_element.inner_text()
+                else:
+                    # Fallback to cell text if no link is found
+                    worker_name = await worker_cell.inner_text()
                 
-                # Save worker statistics to JSON file
-                print("Saving worker statistics...")
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-                output_file = os.path.join(self.output_dir, f"worker_stats_{account_name}_{timestamp}.json")
+                # Extract other metrics
+                ten_min_hashrate = await cells[3].inner_text() if len(cells) > 3 else ""
+                one_h_hashrate = await cells[4].inner_text() if len(cells) > 4 else ""
+                h24_hashrate = await cells[5].inner_text() if len(cells) > 5 else ""
+                rejection_rate = await cells[6].inner_text() if len(cells) > 6 else ""
+                last_share_time = await cells[7].inner_text() if len(cells) > 7 else ""
+                connections_24h = await cells[8].inner_text() if len(cells) > 8 else ""
                 
-                save_json_data(workers, output_file)
-                print(f"Worker statistics saved to: {output_file}")
+                # Create worker data dictionary
+                worker_data = {
+                    "worker": worker_name,
+                    "ten_min_hashrate": ten_min_hashrate,
+                    "one_h_hashrate": one_h_hashrate,
+                    "h24_hashrate": h24_hashrate,
+                    "rejection_rate": rejection_rate,
+                    "last_share_time": last_share_time,
+                    "connections_24h": connections_24h,
+                    "hashrate_chart": "",  # Not extracting chart data
+                    "status": "active",
+                    "timestamp": format_timestamp(),
+                    "observer_user_id": user_id,
+                    "coin_type": coin_type
+                }
                 
-                # Save to Supabase if client is initialized
-                if self.supabase:
-                    try:
-                        result = save_worker_stats(workers)
-                        print(f"Supabase save result: {result}")
-                    except Exception as e:
-                        print(f"Error saving to Supabase: {e}")
-                
-                print(f"Scraping completed successfully for account {account_name}!")
-                print(f"Total workers extracted: {len(workers)}")
-                print(f"Output file: {output_file}")
-                print(f"Screenshot: {screenshot_path}")
+                workers_data.append(worker_data)
+                print(f"Extracted worker: {worker_name}")
                 
             except Exception as e:
-                print(f"Error scraping account {account_name}: {e}")
-                import traceback
+                print(f"Error extracting worker row {row_idx+1}: {e}")
                 traceback.print_exc()
-                raise
-                
-            finally:
-                # Close browser
-                await browser.close()
+        
+        # Debug: Save worker rows if requested
+        if debug:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "debug", "worker_rows_debug_page1.json"), "w") as f:
+                json.dump(workers_data, f, indent=2)
+            print("Saved worker rows for debugging")
+        
+    except Exception as e:
+        print(f"Error extracting workers: {e}")
+        traceback.print_exc()
+    
+    print(f"Extracted {len(workers_data)} workers for {user_id}")
+    return workers_data
 
-async def main():
+async def take_workers_screenshot(page, output_dir, user_id, timestamp_str):
+    """Take a screenshot of the workers page."""
+    try:
+        # Wait for workers table to be visible
+        await page.wait_for_selector(".ant-table-wrapper", timeout=10000)
+        
+        # Take screenshot
+        screenshot_path = os.path.join(output_dir, f"{timestamp_str}_Antpool_BTC_workers.png")
+        await take_screenshot(page, screenshot_path)
+        print(f"Saved workers screenshot to {screenshot_path}")
+        return screenshot_path
+    except Exception as e:
+        print(f"Error taking workers screenshot: {e}")
+        traceback.print_exc()
+        return None
+
+async def save_to_supabase(supabase, workers_data):
+    """Save worker data to Supabase."""
+    try:
+        # Insert data into mining_workers table
+        for worker in workers_data:
+            result = supabase.table("mining_workers").insert(worker).execute()
+            print(f"Saved worker {worker['worker']} to Supabase")
+        return True
+    except Exception as e:
+        print(f"Error saving to Supabase: {e}")
+        traceback.print_exc()
+        return False
+
+async def process_account(browser, output_dir, supabase, account, debug=False):
+    """Process a single account."""
+    try:
+        # Extract account details
+        account_name = account.get("account_name", "Unknown")
+        access_key = account.get("access_key", "")
+        user_id = account.get("user_id", "")
+        coin_type = account.get("coin_type", "BTC")
+        
+        print(f"Processing account: {account_name} ({user_id})")
+        
+        # Skip if missing required fields
+        if not access_key or not user_id:
+            print(f"Skipping account {account_name}: Missing required fields")
+            return False
+        
+        # Create a new page for this account
+        page = await browser.new_page()
+        
+        try:
+            # Get current timestamp for filenames
+            timestamp = datetime.now()
+            timestamp_str = timestamp.strftime("%Y%m%d_%H%M")
+            
+            # Scrape workers
+            workers_data = await scrape_workers(page, access_key, user_id, coin_type, debug)
+            
+            # Take screenshot
+            screenshot_path = await take_workers_screenshot(page, output_dir, user_id, timestamp_str)
+            
+            # Save to file
+            json_path = os.path.join(output_dir, f"worker_stats_{user_id}_{timestamp_str}.json")
+            save_json_to_file(workers_data, json_path)
+            print(f"Saved worker data to {json_path}")
+            
+            # Save to Supabase
+            if supabase and workers_data:
+                await save_to_supabase(supabase, workers_data)
+            
+            # Update last_scraped_at in account_credentials
+            if supabase:
+                try:
+                    supabase.table("account_credentials").update({"last_scraped_at": format_timestamp()}).eq("user_id", user_id).execute()
+                except Exception as e:
+                    print(f"Error updating last_scraped_at: {e}")
+            
+            print(f"Successfully processed account: {account_name}")
+            return True
+            
+        finally:
+            # Close the page
+            await page.close()
+            
+    except Exception as e:
+        print(f"Error processing account {account.get('account_name', 'Unknown')}: {e}")
+        traceback.print_exc()
+        return False
+
+async def fetch_accounts_from_supabase(supabase):
+    """Fetch accounts from Supabase."""
+    try:
+        # First try using the RPC function
+        try:
+            print("Attempting to fetch accounts using RPC function...")
+            response = supabase.rpc('get_all_active_accounts').execute()
+            accounts = response.data
+            if accounts:
+                print(f"Successfully fetched {len(accounts)} accounts using RPC function")
+                return accounts
+        except Exception as rpc_error:
+            print(f"Error fetching accounts using RPC function: {rpc_error}")
+            # Continue to fallback method
+        
+        # Fallback: direct query
+        print("Falling back to direct query...")
+        response = supabase.table("account_credentials").select("*").eq("is_active", True).order("priority.desc,last_scraped_at.asc.nullsfirst").execute()
+        accounts = response.data
+        print(f"Successfully fetched {len(accounts)} accounts using direct query")
+        return accounts
+        
+    except Exception as e:
+        print(f"Error fetching accounts from Supabase: {e}")
+        traceback.print_exc()
+        return []
+
+async def main_async(args):
+    """Main async function."""
+    # Create output directory if it doesn't exist
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Create debug directory if needed
+    if args.debug:
+        os.makedirs(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "debug"), exist_ok=True)
+    
+    # Initialize Supabase client
+    supabase = None
+    if not args.skip_supabase:
+        supabase = get_supabase_client()
+    
+    # Get accounts to scrape
+    accounts = []
+    if args.access_key and args.user_id:
+        # Use command-line arguments
+        accounts = [{
+            "account_name": args.user_id,
+            "access_key": args.access_key,
+            "user_id": args.user_id,
+            "coin_type": args.coin_type
+        }]
+    elif supabase:
+        # Fetch accounts from Supabase
+        accounts = await fetch_accounts_from_supabase(supabase)
+    
+    if not accounts:
+        print("No accounts to scrape. Exiting.")
+        return 1
+    
+    print(f"Found {len(accounts)} accounts to scrape")
+    
+    # Initialize browser
+    async with await setup_browser() as browser:
+        # Process each account
+        results = []
+        for account in accounts:
+            result = await process_account(browser, args.output_dir, supabase, account, args.debug)
+            results.append(result)
+        
+        # Print summary
+        success_count = sum(1 for r in results if r)
+        print(f"Processed {len(accounts)} accounts: {success_count} succeeded, {len(accounts) - success_count} failed")
+    
+    return 0
+
+def main():
     """Main function."""
-    parser = argparse.ArgumentParser(description="Antpool Worker Statistics Scraper")
-    parser.add_argument("--access_key", help="Access key for the observer page (for single account mode)")
-    parser.add_argument("--user_id", help="Observer user ID (for single account mode)")
+    parser = argparse.ArgumentParser(description="Antpool Worker Scraper - Multi-Account Version")
+    parser.add_argument("--access_key", help="Antpool access key (optional if using Supabase)")
+    parser.add_argument("--user_id", help="Antpool observer user ID (optional if using Supabase)")
     parser.add_argument("--coin_type", default="BTC", help="Coin type (default: BTC)")
-    parser.add_argument("--output_dir", help="Output directory for JSON and screenshots")
-    parser.add_argument("--single_account", action="store_true", help="Run in single account mode")
+    parser.add_argument("--output_dir", default="./output", help="Output directory for JSON and screenshots")
+    parser.add_argument("--skip_supabase", action="store_true", help="Skip Supabase integration")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     
     args = parser.parse_args()
     
-    # Set default output directory if not provided
-    if not args.output_dir:
-        args.output_dir = os.path.join(os.getcwd(), "output")
-    
-    # Create scraper instance
-    scraper = AntpoolWorkerScraper(
-        output_dir=args.output_dir,
-        single_account=args.single_account or (args.access_key and args.user_id),
-        access_key=args.access_key,
-        user_id=args.user_id,
-        coin_type=args.coin_type
-    )
-    
-    # Run the scraper
-    return await scraper.run()
+    # Run async main
+    try:
+        return asyncio.run(main_async(args))
+    except Exception as e:
+        print(f"Error in main: {e}")
+        traceback.print_exc()
+        return 1
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(main())
