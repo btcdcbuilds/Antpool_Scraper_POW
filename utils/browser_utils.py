@@ -28,7 +28,7 @@ async def setup_browser(headless: bool = True) -> Browser:
         browser = await playwright.chromium.launch(
             headless=headless,
             args=browser_args,
-            timeout=60000,  # 60 second timeout for browser launch
+            timeout=15000,  # 15 second timeout for browser launch (reduced from 60s)
         )
         print("Browser launched successfully")
         return browser
@@ -49,7 +49,7 @@ async def handle_informed_consent(page: Page) -> bool:
     try:
         # Wait for the consent dialog to appear
         try:
-            await page.wait_for_selector("text=INFORMED CONSENT", timeout=5000)
+            await page.wait_for_selector("text=INFORMED CONSENT", timeout=3000)  # Reduced from 5000
             print("✅ Consent dialog found")
             
             # Take screenshot of modal for debugging
@@ -61,9 +61,9 @@ async def handle_informed_consent(page: Page) -> bool:
             
             # Approach 1: Click "Got it" button
             try:
-                await page.click("text=Got it", timeout=3000)
+                await page.click("text=Got it", timeout=2000)  # Reduced from 3000
                 print("✅ Clicked 'Got it' button")
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)  # Reduced from 1
                 
                 # Check if modal is gone
                 is_modal_gone = await page.evaluate('''
@@ -82,9 +82,9 @@ async def handle_informed_consent(page: Page) -> bool:
             
             # Approach 2: Click "Confirm" button
             try:
-                await page.click("text=Confirm", timeout=3000)
+                await page.click("text=Confirm", timeout=2000)  # Reduced from 3000
                 print("✅ Clicked 'Confirm' button")
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)  # Reduced from 1
                 
                 # Check if modal is gone
                 is_modal_gone = await page.evaluate('''
@@ -132,7 +132,7 @@ async def handle_informed_consent(page: Page) -> bool:
                     }
                 ''')
                 print("✅ Used JavaScript to dismiss consent dialog")
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)  # Reduced from 1
                 
                 # Check if modal is gone
                 is_modal_gone = await page.evaluate('''
@@ -163,7 +163,7 @@ async def handle_informed_consent(page: Page) -> bool:
                     });
                 """)
                 print("✅ Attempted to check consent checkbox via JavaScript")
-                await page.wait_for_timeout(500)
+                await page.wait_for_timeout(300)  # Reduced from 500
                 
                 # Then try to enable and click the confirm button
                 await page.evaluate("""
@@ -180,7 +180,7 @@ async def handle_informed_consent(page: Page) -> bool:
                     });
                 """)
                 print("✅ Attempted to enable and click confirm button via JavaScript")
-                await page.wait_for_timeout(1000)
+                await page.wait_for_timeout(500)  # Reduced from 1000
                 
                 # Check if modal is gone
                 is_modal_gone = await page.evaluate('''
@@ -201,7 +201,7 @@ async def handle_informed_consent(page: Page) -> bool:
             try:
                 await page.keyboard.press('Escape')
                 print("✅ Pressed Escape key to dismiss dialog")
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)  # Reduced from 1
                 
                 # Check if modal is gone
                 is_modal_gone = await page.evaluate('''
@@ -240,7 +240,7 @@ async def handle_informed_consent(page: Page) -> bool:
                 
                 for position in button_positions:
                     await page.mouse.click(position["x"], position["y"])
-                    await page.wait_for_timeout(500)
+                    await page.wait_for_timeout(300)  # Reduced from 500
                     
                     # Check if modal is gone
                     is_modal_gone = await page.evaluate('''
@@ -299,7 +299,7 @@ async def handle_informed_consent(page: Page) -> bool:
                     }
                 ''')
                 print("✅ Forcibly removed modal elements from DOM")
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)  # Reduced from 1
             except Exception as e:
                 print(f"❌ Force DOM removal failed: {str(e)}")
             
@@ -349,7 +349,7 @@ async def ensure_no_modals(page: Page) -> bool:
             }
         ''')
         print("✅ Removed any modal elements")
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)  # Reduced from 1
         return True
     except Exception as e:
         print(f"❌ Error ensuring no modals: {str(e)}")
@@ -370,14 +370,14 @@ async def handle_cookie_consent(page: Page) -> bool:
         
         # Check for cookie banner
         try:
-            await page.click("button.cookie-btn", timeout=3000)
+            await page.click("button.cookie-btn", timeout=2000)  # Reduced from 3000
             print("✅ Clicked cookie banner button")
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)  # Reduced from 1
         except Exception:
             print("ℹ️ Cookie banner not found or already accepted")
         
         # Wait a moment for any animations to complete
-        await page.wait_for_timeout(1000)
+        await page.wait_for_timeout(500)  # Reduced from 1000
         
         # Ensure any remaining modals are dismissed
         await ensure_no_modals(page)
