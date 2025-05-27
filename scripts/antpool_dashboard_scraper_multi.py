@@ -1,549 +1,723 @@
 #!/usr/bin/env python3
 """
-Antpool Dashboard Scraper - Multi-Account Version
+Antpool Dashboard Scraper with improved extraction logic
 
-This script scrapes dashboard metrics from Antpool for multiple accounts
-stored in Supabase.
+This script scrapes dashboard data from Antpool observer accounts
+and saves it to files and Supabase.
 """
 
 import os
 import sys
 import json
-import argparse
 import asyncio
+import logging
 from datetime import datetime
-import traceback
 from pathlib import Path
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from utils.browser_utils import setup_browser, handle_cookie_consent, take_screenshot
-    from utils.data_utils import save_json_to_file, format_timestamp
     from utils.supabase_utils import get_supabase_client
-except ImportError:
-    # Fallback for direct script execution
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-    from utils.browser_utils import setup_browser, handle_cookie_consent, take_screenshot
-    from utils.data_utils import save_json_to_file, format_timestamp
-    from utils.supabase_utils import get_supabase_client
-
-async def scrape_dashboard(page, access_key, user_id, coin_type):
-    """Scrape dashboard metrics from Antpool."""
-    print(f"Scraping dashboard for {user_id} ({coin_type})...")
-    
-    # Navigate to observer page
-    observer_url = f"https://www.antpool.com/observer?accessKey={access_key}&coinType={coin_type}&observerUserId={user_id}"
-    await page.goto(observer_url, wait_until="networkidle")
-    print(f"Navigated to observer page for {user_id}")
-    
-    # Handle cookie consent if needed
-    await handle_cookie_consent(page)
-    
-    # Take a screenshot of the page before waiting for selectors
-    debug_screenshot_path = f"./debug_{user_id}_before_selectors.png"
-    await take_screenshot(page, debug_screenshot_path)
-    print(f"Saved debug screenshot to {debug_screenshot_path}")
-    
-    # Wait for page to load - using multiple possible selectors
-    print("Waiting for dashboard elements to load...")
+    from utils.browser_utils import setup_browser, handle_consent_dialog, take_screenshot
+    from utils.data_utils import save_json_to_file
+except ImportError as e:
+    logger.error(f"Import error: {e}")
+    # Try relative import as fallback
     try:
-        # Try multiple selectors that might indicate the dashboard is loaded
+        from utils.supabase_utils import get_supabase_client
+        from utils.browser_utils import setup_browser, handle_consent_dialog, take_screenshot
+        from utils.data_utils import save_json_to_file
+    except ImportError as e2:
+        logger.error(f"Fallback import also failed: {e2}")
+        sys.exit(1)
+
+async def extract_dashboard_metrics(page):
+    """Extract all dashboard metrics using robust DOM traversal.
+    
+    Args:
+        page: Playwright page
+        
+    Returns:
+        dict: Extracted dashboard metrics
+    """
+    logger.info("Starting dashboard metrics extraction...")
+    
+    # Initialize results dictionary
+    metrics = {}
+    
+    try:
+        # Extract all metrics using a single comprehensive JavaScript function
+        # This approach is more reliable as it handles the DOM structure as a whole
+        metrics = await page.evaluate("""
+            () => {
+                const result = {};
+                
+                // Helper function to find text nodes containing specific text
+                function findTextNodes(searchText) {
+                    const walker = document.createTreeWalker(
+                        document.body,
+                        NodeFilter.SHOW_TEXT,
+                        { acceptNode: node => node.textContent.includes(searchText) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT }
+                    );
+                    
+                    const nodes = [];
+                    let node;
+                    while (node = walker.nextNode()) {
+                        nodes.push(node);
+                    }
+                    return nodes;
+                }
+                
+                // Helper function to get the closest numeric value near a text node
+                function getValueNearText(textNode, maxDistance = 5) {
+                    // Check the node itself
+                    const nodeText = textNode.textContent.trim();
+                    const numericMatch = nodeText.match(/[\\d.]+/);
+                    if (numericMatch) {
+                        return numericMatch[0];
+                    }
+                    
+                    // Check parent and siblings
+                    let currentNode = textNode.parentNode;
+                    for (let i = 0; i < maxDistance && currentNode; i++) {
+                        // Check all child text nodes
+                        const childTexts = Array.from(currentNode.childNodes)
+                            .filter(node => node.nodeType === Node.TEXT_NODE)
+                            .map(node => node.textContent.trim())
+                            .filter(text => text.length > 0);
+                            
+                        for (const text of childTexts) {
+                            const match = text.match(/[\\d.]+/);
+                            if (match) {
+                                return match[0];
+                            }
+                        }
+                        
+                        // Check elements with specific classes that might contain values
+                        const valueElements = currentNode.querySelectorAll('.value, .number, [class*="value"], [class*="number"]');
+                        for (const el of valueElements) {
+                            const match = el.textContent.trim().match(/[\\d.]+/);
+                            if (match) {
+                                return match[0];
+                            }
+                        }
+                        
+                        // Move up the DOM tree
+                        currentNode = currentNode.parentNode;
+                    }
+                    
+                    return null;
+                }
+                
+                // Extract 10-Minute Hashrate
+                try {
+                    const tenMinNodes = findTextNodes('10-Minute');
+                    if (tenMinNodes.length > 0) {
+                        // First try to find the value in a nearby element
+                        let found = false;
+                        for (const node of tenMinNodes) {
+                            const parent = node.parentNode;
+                            if (!parent) continue;
+                            
+                            // Look for siblings or children with numeric content
+                            const siblings = Array.from(parent.parentNode.children);
+                            for (const sibling of siblings) {
+                                const numericText = sibling.textContent.trim().match(/[\\d.]+\\s*(?:PH\\/s|TH\\/s|H\\/s)/i);
+                                if (numericText) {
+                                    result.tenMinHashrate = numericText[0].trim();
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            
+                            if (!found) {
+                                // Try to find any element with both numeric content and hashrate unit
+                                const hashElements = document.querySelectorAll('*');
+                                for (const el of hashElements) {
+                                    if (el.textContent && el.textContent.match(/[\\d.]+\\s*(?:PH\\/s|TH\\/s|H\\/s)/i)) {
+                                        const rect1 = node.parentNode.getBoundingClientRect();
+                                        const rect2 = el.getBoundingClientRect();
+                                        // Check if they're close to each other vertically
+                                        if (Math.abs(rect1.top - rect2.top) < 50) {
+                                            result.tenMinHashrate = el.textContent.trim();
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // If still not found, look for any element containing both "10-Minute" and a number
+                        if (!found) {
+                            const elements = document.querySelectorAll('*');
+                            for (const el of elements) {
+                                if (el.textContent && el.textContent.includes('10-Minute')) {
+                                    const numericMatch = el.textContent.match(/[\\d.]+\\s*(?:PH\\/s|TH\\/s|H\\/s)/i);
+                                    if (numericMatch) {
+                                        result.tenMinHashrate = numericMatch[0].trim();
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error extracting 10-min hashrate:', e);
+                }
+                
+                // Extract 24H hashrate
+                try {
+                    const dayNodes = findTextNodes('24H');
+                    if (dayNodes.length > 0) {
+                        // First try to find the value in a nearby element
+                        let found = false;
+                        for (const node of dayNodes) {
+                            const parent = node.parentNode;
+                            if (!parent) continue;
+                            
+                            // Look for siblings or children with numeric content
+                            const siblings = Array.from(parent.parentNode.children);
+                            for (const sibling of siblings) {
+                                const numericText = sibling.textContent.trim().match(/[\\d.]+\\s*(?:PH\\/s|TH\\/s|H\\/s)/i);
+                                if (numericText) {
+                                    result.dayHashrate = numericText[0].trim();
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            
+                            if (!found) {
+                                // Try to find any element with both numeric content and hashrate unit
+                                const hashElements = document.querySelectorAll('*');
+                                for (const el of hashElements) {
+                                    if (el.textContent && el.textContent.match(/[\\d.]+\\s*(?:PH\\/s|TH\\/s|H\\/s)/i)) {
+                                        const rect1 = node.parentNode.getBoundingClientRect();
+                                        const rect2 = el.getBoundingClientRect();
+                                        // Check if they're close to each other vertically
+                                        if (Math.abs(rect1.top - rect2.top) < 50) {
+                                            result.dayHashrate = el.textContent.trim();
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error extracting 24h hashrate:', e);
+                }
+                
+                // Extract Active workers
+                try {
+                    const activeNodes = findTextNodes('Active');
+                    if (activeNodes.length > 0) {
+                        for (const node of activeNodes) {
+                            // Get parent element
+                            const parent = node.parentNode;
+                            if (!parent) continue;
+                            
+                            // Check if this is the worker count section (not a table header)
+                            if (parent.textContent.trim() === 'Active') {
+                                // Look for siblings with numeric content
+                                const siblings = Array.from(parent.parentNode.children);
+                                for (const sibling of siblings) {
+                                    const numericText = sibling.textContent.trim().match(/\\d+/);
+                                    if (numericText) {
+                                        result.activeWorkers = numericText[0].trim();
+                                        break;
+                                    }
+                                }
+                                
+                                // If not found in siblings, check the parent's next sibling
+                                if (!result.activeWorkers) {
+                                    const nextSibling = parent.nextElementSibling;
+                                    if (nextSibling) {
+                                        const numericText = nextSibling.textContent.trim().match(/\\d+/);
+                                        if (numericText) {
+                                            result.activeWorkers = numericText[0].trim();
+                                        }
+                                    }
+                                }
+                                
+                                // If still not found, look for any nearby element with just a number
+                                if (!result.activeWorkers) {
+                                    const rect = parent.getBoundingClientRect();
+                                    const elements = document.querySelectorAll('*');
+                                    for (const el of elements) {
+                                        if (el.textContent && /^\\s*\\d+\\s*$/.test(el.textContent)) {
+                                            const elRect = el.getBoundingClientRect();
+                                            // Check if they're close to each other
+                                            if (Math.abs(rect.left - elRect.left) < 200 && Math.abs(rect.top - elRect.top) < 50) {
+                                                result.activeWorkers = el.textContent.trim();
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error extracting active workers:', e);
+                }
+                
+                // Extract Inactive workers
+                try {
+                    const inactiveNodes = findTextNodes('Inactive');
+                    if (inactiveNodes.length > 0) {
+                        for (const node of inactiveNodes) {
+                            // Get parent element
+                            const parent = node.parentNode;
+                            if (!parent) continue;
+                            
+                            // Check if this is the worker count section (not a table header)
+                            if (parent.textContent.trim() === 'Inactive') {
+                                // Look for siblings with numeric content
+                                const siblings = Array.from(parent.parentNode.children);
+                                for (const sibling of siblings) {
+                                    const numericText = sibling.textContent.trim().match(/\\d+/);
+                                    if (numericText) {
+                                        result.inactiveWorkers = numericText[0].trim();
+                                        break;
+                                    }
+                                }
+                                
+                                // If not found in siblings, check the parent's next sibling
+                                if (!result.inactiveWorkers) {
+                                    const nextSibling = parent.nextElementSibling;
+                                    if (nextSibling) {
+                                        const numericText = nextSibling.textContent.trim().match(/\\d+/);
+                                        if (numericText) {
+                                            result.inactiveWorkers = numericText[0].trim();
+                                        }
+                                    }
+                                }
+                                
+                                // If still not found, look for any nearby element with just a number
+                                if (!result.inactiveWorkers) {
+                                    const rect = parent.getBoundingClientRect();
+                                    const elements = document.querySelectorAll('*');
+                                    for (const el of elements) {
+                                        if (el.textContent && /^\\s*\\d+\\s*$/.test(el.textContent)) {
+                                            const elRect = el.getBoundingClientRect();
+                                            // Check if they're close to each other
+                                            if (Math.abs(rect.left - elRect.left) < 200 && Math.abs(rect.top - elRect.top) < 50) {
+                                                result.inactiveWorkers = el.textContent.trim();
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error extracting inactive workers:', e);
+                }
+                
+                // Extract Account Balance
+                try {
+                    const balanceNodes = findTextNodes('Account Balance');
+                    if (balanceNodes.length > 0) {
+                        for (const node of balanceNodes) {
+                            // Get parent element
+                            const parent = node.parentNode;
+                            if (!parent) continue;
+                            
+                            // Look for siblings with numeric content
+                            const siblings = Array.from(parent.parentNode.children);
+                            for (const sibling of siblings) {
+                                const numericText = sibling.textContent.trim().match(/[\\d.]+/);
+                                if (numericText) {
+                                    result.accountBalance = numericText[0].trim();
+                                    break;
+                                }
+                            }
+                            
+                            // If not found in siblings, check the parent's next sibling
+                            if (!result.accountBalance) {
+                                const nextSibling = parent.nextElementSibling;
+                                if (nextSibling) {
+                                    const numericText = nextSibling.textContent.trim().match(/[\\d.]+/);
+                                    if (numericText) {
+                                        result.accountBalance = numericText[0].trim();
+                                    }
+                                }
+                            }
+                            
+                            // If still not found, look for any nearby element with a decimal number
+                            if (!result.accountBalance) {
+                                const rect = parent.getBoundingClientRect();
+                                const elements = document.querySelectorAll('*');
+                                for (const el of elements) {
+                                    if (el.textContent && /^\\s*[\\d.]+\\s*$/.test(el.textContent)) {
+                                        const elRect = el.getBoundingClientRect();
+                                        // Check if they're close to each other
+                                        if (Math.abs(rect.left - elRect.left) < 200 && Math.abs(rect.top - elRect.top) < 50) {
+                                            result.accountBalance = el.textContent.trim();
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error extracting account balance:', e);
+                }
+                
+                // Extract Yesterday Earnings
+                try {
+                    const yesterdayNodes = findTextNodes('Yesterday Earnings');
+                    if (yesterdayNodes.length > 0) {
+                        for (const node of yesterdayNodes) {
+                            // Get parent element
+                            const parent = node.parentNode;
+                            if (!parent) continue;
+                            
+                            // Look for siblings with numeric content
+                            const siblings = Array.from(parent.parentNode.children);
+                            for (const sibling of siblings) {
+                                const numericText = sibling.textContent.trim().match(/[\\d.]+/);
+                                if (numericText) {
+                                    result.yesterdayEarnings = numericText[0].trim();
+                                    break;
+                                }
+                            }
+                            
+                            // If not found in siblings, check the parent's next sibling
+                            if (!result.yesterdayEarnings) {
+                                const nextSibling = parent.nextElementSibling;
+                                if (nextSibling) {
+                                    const numericText = nextSibling.textContent.trim().match(/[\\d.]+/);
+                                    if (numericText) {
+                                        result.yesterdayEarnings = numericText[0].trim();
+                                    }
+                                }
+                            }
+                            
+                            // If still not found, look for any nearby element with a decimal number
+                            if (!result.yesterdayEarnings) {
+                                const rect = parent.getBoundingClientRect();
+                                const elements = document.querySelectorAll('*');
+                                for (const el of elements) {
+                                    if (el.textContent && /^\\s*[\\d.]+\\s*$/.test(el.textContent)) {
+                                        const elRect = el.getBoundingClientRect();
+                                        // Check if they're close to each other
+                                        if (Math.abs(rect.left - elRect.left) < 200 && Math.abs(rect.top - elRect.top) < 50) {
+                                            result.yesterdayEarnings = el.textContent.trim();
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error extracting yesterday earnings:', e);
+                }
+                
+                // Fallback method: extract all numeric values with their labels
+                try {
+                    // Get all elements with text content
+                    const elements = document.querySelectorAll('*');
+                    const valueElements = [];
+                    
+                    // Find elements that contain just numbers or numbers with units
+                    for (const el of elements) {
+                        if (el.childNodes.length === 1 && 
+                            el.childNodes[0].nodeType === Node.TEXT_NODE &&
+                            (
+                                /^\\s*[\\d.]+\\s*$/.test(el.textContent) || 
+                                /^\\s*[\\d.]+\\s*(?:PH\\/s|TH\\/s|H\\/s)\\s*$/i.test(el.textContent)
+                            )
+                        ) {
+                            valueElements.push(el);
+                        }
+                    }
+                    
+                    // For each value element, try to find a label nearby
+                    for (const el of valueElements) {
+                        const rect = el.getBoundingClientRect();
+                        const value = el.textContent.trim();
+                        
+                        // Skip if already found
+                        if (
+                            (value === result.tenMinHashrate) ||
+                            (value === result.dayHashrate) ||
+                            (value === result.activeWorkers) ||
+                            (value === result.inactiveWorkers) ||
+                            (value === result.accountBalance) ||
+                            (value === result.yesterdayEarnings)
+                        ) {
+                            continue;
+                        }
+                        
+                        // Look for labels nearby
+                        for (const labelEl of elements) {
+                            if (labelEl === el) continue;
+                            
+                            const labelRect = labelEl.getBoundingClientRect();
+                            const labelText = labelEl.textContent.trim();
+                            
+                            // Check if they're close to each other
+                            if (Math.abs(rect.left - labelRect.left) < 200 && Math.abs(rect.top - labelRect.top) < 50) {
+                                if (labelText.includes('10-Minute') && !result.tenMinHashrate) {
+                                    result.tenMinHashrate = value;
+                                } else if ((labelText.includes('24H') || labelText.includes('24-Hour')) && !result.dayHashrate) {
+                                    result.dayHashrate = value;
+                                } else if (labelText === 'Active' && !result.activeWorkers) {
+                                    result.activeWorkers = value;
+                                } else if (labelText === 'Inactive' && !result.inactiveWorkers) {
+                                    result.inactiveWorkers = value;
+                                } else if (labelText.includes('Account Balance') && !result.accountBalance) {
+                                    result.accountBalance = value;
+                                } else if (labelText.includes('Yesterday Earnings') && !result.yesterdayEarnings) {
+                                    result.yesterdayEarnings = value;
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error in fallback extraction:', e);
+                }
+                
+                return result;
+            }
+        """)
+        
+        # Log the extracted metrics
+        for key, value in metrics.items():
+            logger.info(f"✅ Extracted {key}: {value}")
+        
+        # Count successful extractions
+        success_count = len(metrics.keys())
+        logger.info(f"Successfully extracted {success_count} dashboard metrics")
+        
+        return metrics
+    except Exception as e:
+        logger.error(f"❌ Error extracting dashboard metrics: {e}")
+        return {}
+
+async def scrape_dashboard(access_key, observer_user_id, coin_type="BTC", output_dir="./output"):
+    """Scrape dashboard data for a given account."""
+    logger.info(f"\n===== Processing account: {observer_user_id} =====")
+    logger.info(f"Scraping dashboard for {observer_user_id} ({coin_type})...")
+    
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Initialize browser
+    logger.info("Initializing browser...")
+    browser = await setup_browser(headless=True)
+    logger.info("✅ Browser initialized successfully")
+    
+    # Create a new page
+    page = await browser.new_page()
+    page.set_default_timeout(15000)  # 15 second timeout
+    
+    try:
+        # Construct the URL
+        url = (
+            f"https://www.antpool.com/observer?accessKey={access_key}"
+            f"&coinType={coin_type}&observerUserId={observer_user_id}"
+        )
+        
+        # Navigate to the page
+        await page.goto(url, wait_until="networkidle")
+        logger.info(f"Navigated to observer page for {observer_user_id}")
+        
+        # Take screenshot before handling consent
+        initial_screenshot = os.path.join(output_dir, f"initial_{observer_user_id}.png")
+        await take_screenshot(page, initial_screenshot)
+        
+        # Handle consent dialog
+        await handle_consent_dialog(page)
+        
+        # Take screenshot after handling consent
+        after_consent_screenshot = os.path.join(output_dir, f"after_consent_{observer_user_id}.png")
+        await take_screenshot(page, after_consent_screenshot)
+        
+        # Wait for dashboard elements to load
+        logger.info("Waiting for dashboard elements to load...")
+        
+        # Try multiple selectors for dashboard elements
         selectors = [
             ".hashrate-item", 
             ".worker-item", 
-            "text=Hashrate", 
-            "text=Workers Num",
-            "text=Total Earnings"
+            "text=Hashrate",
+            ".dashboard-container",
+            ".dashboard"
         ]
         
+        dashboard_found = False
         for selector in selectors:
             try:
-                await page.wait_for_selector(selector, timeout=10000)
-                print(f"Dashboard element found: {selector}")
+                logger.info(f"Trying selector: {selector}")
+                await page.wait_for_selector(selector, timeout=5000)
+                logger.info(f"Dashboard element found: {selector}")
+                dashboard_found = True
                 break
             except Exception as e:
-                print(f"Selector {selector} not found, trying next...")
-                continue
+                logger.info(f"Selector {selector} not found, trying next...")
         
-        print("Dashboard elements detected, proceeding with data extraction")
-    except Exception as e:
-        print(f"Error waiting for dashboard elements: {e}")
-        # Save HTML for debugging
-        html = await page.content()
-        with open(f"./debug_{user_id}_html.html", "w") as f:
-            f.write(html)
-        print(f"Saved HTML content to debug_{user_id}_html.html")
-        raise
-    
-    # Extract dashboard metrics
-    dashboard_data = {}
-    
-    try:
-        print("Starting dashboard metrics extraction...")
+        if not dashboard_found:
+            logger.warning("Could not find any dashboard elements")
+            final_screenshot = os.path.join(output_dir, f"final_{observer_user_id}.png")
+            await take_screenshot(page, final_screenshot)
+            return {"error": "Dashboard elements not found"}
         
-        # Extract hashrate metrics
-        print("Extracting hashrate metrics...")
-        try:
-            # Try to get 10-minute hashrate using standard selectors
-            ten_min_hashrate = await page.evaluate("""
-                () => {
-                    // Try multiple possible selectors using standard JavaScript
-                    const hashrates = document.querySelectorAll('.hashrate-item .value');
-                    if (hashrates.length > 0) {
-                        return hashrates[0].textContent.trim();
-                    }
-                    
-                    // Try by text content
-                    const allElements = document.querySelectorAll('*');
-                    for (const el of allElements) {
-                        if (el.textContent && el.textContent.includes('10-Minute') || 
-                            el.textContent && el.textContent.includes('10-Min')) {
-                            const parent = el.parentElement;
-                            if (parent) {
-                                const valueEl = parent.querySelector('.value');
-                                if (valueEl) {
-                                    return valueEl.textContent.trim();
-                                }
-                            }
-                        }
-                    }
-                    
-                    // If all selectors fail, try to find by position
-                    const allValues = document.querySelectorAll('.value');
-                    if (allValues.length > 0) {
-                        return allValues[0].textContent.trim();
-                    }
-                    
-                    return null;
-                }
-            """)
-            
-            if ten_min_hashrate:
-                dashboard_data["ten_min_hashrate"] = ten_min_hashrate
-                print(f"Found 10-minute hashrate: {ten_min_hashrate}")
-            else:
-                print("10-minute hashrate not found")
-            
-            # Try to get 24-hour hashrate using standard selectors
-            day_hashrate = await page.evaluate("""
-                () => {
-                    // Try multiple possible selectors using standard JavaScript
-                    const hashrates = document.querySelectorAll('.hashrate-item .value');
-                    if (hashrates.length > 1) {
-                        return hashrates[1].textContent.trim();
-                    }
-                    
-                    // Try by text content
-                    const allElements = document.querySelectorAll('*');
-                    for (const el of allElements) {
-                        if (el.textContent && el.textContent.includes('24H') || 
-                            el.textContent && el.textContent.includes('24-hour')) {
-                            const parent = el.parentElement;
-                            if (parent) {
-                                const valueEl = parent.querySelector('.value');
-                                if (valueEl) {
-                                    return valueEl.textContent.trim();
-                                }
-                            }
-                        }
-                    }
-                    
-                    // If all selectors fail, try to find by position
-                    const allValues = document.querySelectorAll('.value');
-                    if (allValues.length > 1) {
-                        return allValues[1].textContent.trim();
-                    }
-                    
-                    return null;
-                }
-            """)
-            
-            if day_hashrate:
-                dashboard_data["day_hashrate"] = day_hashrate
-                print(f"Found 24-hour hashrate: {day_hashrate}")
-            else:
-                print("24-hour hashrate not found")
-                
-        except Exception as e:
-            print(f"Error extracting hashrate metrics: {e}")
+        logger.info("Dashboard elements detected, proceeding with data extraction")
         
-        # Extract worker counts
-        print("Extracting worker counts...")
-        try:
-            # Try to get active workers using standard selectors
-            active_workers = await page.evaluate("""
-                () => {
-                    // Try multiple possible selectors using standard JavaScript
-                    const workers = document.querySelectorAll('.worker-item .value');
-                    if (workers.length > 0) {
-                        return workers[0].textContent.trim();
-                    }
-                    
-                    // Try by text content
-                    const allElements = document.querySelectorAll('*');
-                    for (const el of allElements) {
-                        if (el.textContent && el.textContent.includes('Active')) {
-                            const parent = el.parentElement;
-                            if (parent) {
-                                const valueEl = parent.querySelector('.value');
-                                if (valueEl) {
-                                    return valueEl.textContent.trim();
-                                }
-                            }
-                        }
-                    }
-                    
-                    return null;
-                }
-            """)
-            
-            if active_workers:
-                dashboard_data["active_workers"] = active_workers
-                print(f"Found active workers: {active_workers}")
-            else:
-                print("Active workers count not found")
-            
-            # Try to get inactive workers using standard selectors
-            inactive_workers = await page.evaluate("""
-                () => {
-                    // Try multiple possible selectors using standard JavaScript
-                    const workers = document.querySelectorAll('.worker-item .value');
-                    if (workers.length > 1) {
-                        return workers[1].textContent.trim();
-                    }
-                    
-                    // Try by text content
-                    const allElements = document.querySelectorAll('*');
-                    for (const el of allElements) {
-                        if (el.textContent && el.textContent.includes('Inactive')) {
-                            const parent = el.parentElement;
-                            if (parent) {
-                                const valueEl = parent.querySelector('.value');
-                                if (valueEl) {
-                                    return valueEl.textContent.trim();
-                                }
-                            }
-                        }
-                    }
-                    
-                    return null;
-                }
-            """)
-            
-            if inactive_workers:
-                dashboard_data["inactive_workers"] = inactive_workers
-                print(f"Found inactive workers: {inactive_workers}")
-            else:
-                print("Inactive workers count not found")
-                
-        except Exception as e:
-            print(f"Error extracting worker counts: {e}")
+        # Extract dashboard metrics
+        dashboard_metrics = await extract_dashboard_metrics(page)
         
-        # Extract account balance
-        print("Extracting account balance...")
-        try:
-            account_balance = await page.evaluate("""
-                () => {
-                    // Try multiple possible selectors using standard JavaScript
-                    const balanceEl = document.querySelector('.balance-item .value');
-                    if (balanceEl) {
-                        return balanceEl.textContent.trim();
-                    }
-                    
-                    // Try by text content
-                    const allElements = document.querySelectorAll('*');
-                    for (const el of allElements) {
-                        if (el.textContent && el.textContent.includes('Balance')) {
-                            const parent = el.parentElement;
-                            if (parent) {
-                                const valueEl = parent.querySelector('.value');
-                                if (valueEl) {
-                                    return valueEl.textContent.trim();
-                                }
-                            }
-                        }
-                    }
-                    
-                    return null;
-                }
-            """)
-            
-            if account_balance:
-                dashboard_data["account_balance"] = account_balance
-                print(f"Found account balance: {account_balance}")
-            else:
-                print("Account balance not found")
-                
-        except Exception as e:
-            print(f"Error extracting account balance: {e}")
+        # Combine all data
+        dashboard_data = {
+            "timestamp": datetime.now().isoformat(),
+            "observer_user_id": observer_user_id,
+            "coin_type": coin_type,
+            **dashboard_metrics
+        }
         
-        # Extract yesterday's earnings
-        print("Extracting yesterday's earnings...")
-        try:
-            yesterday_earnings = await page.evaluate("""
-                () => {
-                    // Try multiple possible selectors using standard JavaScript
-                    const earningsEl = document.querySelector('.earnings-item .value');
-                    if (earningsEl) {
-                        return earningsEl.textContent.trim();
-                    }
-                    
-                    // Try by text content
-                    const allElements = document.querySelectorAll('*');
-                    for (const el of allElements) {
-                        if (el.textContent && el.textContent.includes('Yesterday') || 
-                            el.textContent && el.textContent.includes('Earnings')) {
-                            const parent = el.parentElement;
-                            if (parent) {
-                                const valueEl = parent.querySelector('.value');
-                                if (valueEl) {
-                                    return valueEl.textContent.trim();
-                                }
-                            }
-                        }
-                    }
-                    
-                    return null;
-                }
-            """)
-            
-            if yesterday_earnings:
-                dashboard_data["yesterday_earnings"] = yesterday_earnings
-                print(f"Found yesterday's earnings: {yesterday_earnings}")
-            else:
-                print("Yesterday's earnings not found")
-                
-        except Exception as e:
-            print(f"Error extracting yesterday's earnings: {e}")
+        logger.info(f"Dashboard data: {json.dumps(dashboard_data, indent=2)}")
         
-    except Exception as e:
-        print(f"Error extracting dashboard metrics: {e}")
-        traceback.print_exc()
-    
-    # Add metadata
-    dashboard_data["timestamp"] = format_timestamp()
-    dashboard_data["observer_user_id"] = user_id
-    dashboard_data["coin_type"] = coin_type
-    
-    # Count how many metrics were successfully extracted
-    metrics_count = len(dashboard_data) - 3  # Subtract the 3 metadata fields
-    print(f"Successfully extracted {metrics_count} dashboard metrics for {user_id}")
-    print(f"Dashboard data: {json.dumps(dashboard_data, indent=2)}")
-    
-    return dashboard_data
-
-async def take_dashboard_screenshot(page, output_dir, user_id, timestamp_str):
-    """Take a screenshot of the dashboard."""
-    try:
-        print(f"Taking dashboard screenshot for {user_id}...")
-        
-        # Take screenshot without waiting for specific selectors
-        screenshot_path = os.path.join(output_dir, f"{timestamp_str}_Antpool_BTC.png")
+        # Take dashboard screenshot
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        screenshot_path = os.path.join(output_dir, f"{timestamp}_Antpool_{coin_type}.png")
         await take_screenshot(page, screenshot_path)
-        print(f"✅ Saved dashboard screenshot to {screenshot_path}")
-        return screenshot_path
-    except Exception as e:
-        print(f"❌ Error taking dashboard screenshot: {e}")
-        traceback.print_exc()
-        return None
-
-async def save_to_supabase(supabase, dashboard_data):
-    """Save dashboard data to Supabase."""
-    try:
-        print("Uploading dashboard data to Supabase...")
+        logger.info(f"✅ Saved dashboard screenshot to {screenshot_path}")
         
-        # Insert data into mining_pool_stats table
-        result = supabase.table("mining_pool_stats").insert(dashboard_data).execute()
+        # Save data to file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        data_file = os.path.join(output_dir, f"pool_stats_{observer_user_id}_{timestamp}.json")
+        with open(data_file, "w") as f:
+            json.dump(dashboard_data, f, indent=2)
+        logger.info(f"✅ Saved dashboard data to {data_file}")
         
-        # Check if the upload was successful
-        if hasattr(result, 'data') and result.data:
-            print(f"✅ Successfully uploaded dashboard data to Supabase")
-            return True
-        else:
-            print(f"❌ Failed to upload dashboard data to Supabase: No data returned")
-            return False
-    except Exception as e:
-        print(f"❌ Error uploading to Supabase: {e}")
-        traceback.print_exc()
-        return False
-
-async def process_account(browser, output_dir, supabase, account):
-    """Process a single account."""
-    try:
-        # Extract account details
-        account_name = account.get("account_name", "Unknown")
-        access_key = account.get("access_key", "")
-        user_id = account.get("user_id", "")
-        coin_type = account.get("coin_type", "BTC")
-        
-        print(f"\n===== Processing account: {account_name} ({user_id}) =====")
-        
-        # Skip if missing required fields
-        if not access_key or not user_id:
-            print(f"❌ Skipping account {account_name}: Missing required fields")
-            return False
-        
-        # Create a new page for this account
-        page = await browser.new_page()
-        
+        # Upload to Supabase
         try:
-            # Get current timestamp for filenames
-            timestamp = datetime.now()
-            timestamp_str = timestamp.strftime("%Y%m%d_%H%M")
-            
-            # Scrape dashboard
-            dashboard_data = await scrape_dashboard(page, access_key, user_id, coin_type)
-            
-            # Take screenshot
-            screenshot_path = await take_dashboard_screenshot(page, output_dir, user_id, timestamp_str)
-            
-            # Save to file
-            json_path = os.path.join(output_dir, f"pool_stats_{user_id}_{timestamp_str}.json")
-            save_json_to_file(dashboard_data, json_path)
-            print(f"✅ Saved dashboard data to {json_path}")
-            
-            # Save to Supabase
+            supabase = get_supabase_client()
             if supabase:
-                supabase_success = await save_to_supabase(supabase, dashboard_data)
-                if supabase_success:
-                    print(f"✅ Successfully uploaded dashboard data to Supabase for {account_name}")
+                # Prepare data for Supabase
+                supabase_data = {
+                    "timestamp": dashboard_data["timestamp"],
+                    "observer_user_id": observer_user_id,
+                    "coin_type": coin_type,
+                    "ten_min_hashrate": dashboard_data.get("tenMinHashrate", "0"),
+                    "day_hashrate": dashboard_data.get("dayHashrate", "0"),
+                    "active_workers": dashboard_data.get("activeWorkers", "0"),
+                    "inactive_workers": dashboard_data.get("inactiveWorkers", "0"),
+                    "account_balance": dashboard_data.get("accountBalance", "0"),
+                    "yesterday_earnings": dashboard_data.get("yesterdayEarnings", "0")
+                }
+                
+                # Insert data into Supabase
+                response = supabase.table("mining_pool_stats").insert(supabase_data).execute()
+                
+                if hasattr(response, 'data') and response.data:
+                    logger.info(f"✅ Successfully uploaded data to Supabase for {observer_user_id}")
                 else:
-                    print(f"❌ Failed to upload dashboard data to Supabase for {account_name}")
-            
-            # Update last_scraped_at in account_credentials
-            if supabase:
-                try:
-                    print(f"Updating last_scraped_at for {account_name}...")
-                    update_result = supabase.table("account_credentials").update({"last_scraped_at": format_timestamp()}).eq("user_id", user_id).execute()
-                    if hasattr(update_result, 'data') and update_result.data:
-                        print(f"✅ Successfully updated last_scraped_at for {account_name}")
-                    else:
-                        print(f"❌ Failed to update last_scraped_at for {account_name}")
-                except Exception as e:
-                    print(f"❌ Error updating last_scraped_at: {e}")
-            
-            print(f"✅ Successfully processed account: {account_name}")
-            return True
-            
-        finally:
-            # Close the page
-            await page.close()
-            
-    except Exception as e:
-        print(f"❌ Error processing account {account.get('account_name', 'Unknown')}: {e}")
-        traceback.print_exc()
-        return False
-
-async def fetch_accounts_from_supabase(supabase):
-    """Fetch accounts from Supabase."""
-    try:
-        # First try using the RPC function
-        try:
-            print("Attempting to fetch accounts using RPC function...")
-            response = supabase.rpc('get_all_active_accounts', {}).execute()
-            accounts = response.data
-            if accounts:
-                print(f"✅ Successfully fetched {len(accounts)} accounts using RPC function")
-                return accounts
-        except Exception as rpc_error:
-            print(f"❌ Error fetching accounts using RPC function: {rpc_error}")
-            # Continue to fallback method
+                    logger.error(f"❌ Error uploading to Supabase: {response}")
+        except Exception as e:
+            logger.error(f"❌ Error uploading to Supabase: {e}")
         
-        # Fallback: direct query
-        print("Falling back to direct query...")
-        response = supabase.table("account_credentials").select("*").eq("is_active", True).order("priority.desc,last_scraped_at.asc.nullsfirst").execute()
+        return dashboard_data
+    
+    except Exception as e:
+        logger.error(f"❌ Error scraping dashboard: {e}")
+        # Take error screenshot
+        error_screenshot = os.path.join(output_dir, f"error_{observer_user_id}.png")
+        await take_screenshot(page, error_screenshot)
+        return {"error": str(e)}
+    
+    finally:
+        # Close browser
+        await browser.close()
+        logger.info("Browser closed")
+
+async def main():
+    """Main function to run the dashboard scraper."""
+    logger.info("\n===== Starting Antpool Dashboard Scraper =====")
+    logger.info(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    # Set output directory
+    output_dir = os.path.join(os.getcwd(), "output")
+    logger.info(f"Output directory: {output_dir}")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Get Supabase client
+    supabase = get_supabase_client()
+    
+    if not supabase:
+        logger.error("❌ Failed to initialize Supabase client")
+        return
+    
+    # Get accounts from Supabase
+    try:
+        response = supabase.table("accounts").select("*").eq("active", True).execute()
         accounts = response.data
-        print(f"✅ Successfully fetched {len(accounts)} accounts using direct query")
-        return accounts
-        
+        logger.info(f"✅ Found {len(accounts)} active accounts in Supabase")
     except Exception as e:
-        print(f"❌ Error fetching accounts from Supabase: {e}")
-        traceback.print_exc()
-        return []
-
-async def main_async(args):
-    """Main async function."""
-    print("\n===== Starting Antpool Dashboard Scraper =====")
-    print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.error(f"❌ Error fetching accounts from Supabase: {e}")
+        return
     
-    # Create output directory if it doesn't exist
-    os.makedirs(args.output_dir, exist_ok=True)
-    print(f"Output directory: {os.path.abspath(args.output_dir)}")
+    results = {}
+    success_count = 0
+    failure_count = 0
     
-    # Initialize Supabase client
-    supabase = None
-    if not args.skip_supabase:
-        print("Initializing Supabase client...")
-        supabase = get_supabase_client()
-        if supabase:
-            print("✅ Supabase client initialized successfully")
-        else:
-            print("❌ Failed to initialize Supabase client")
+    for account in accounts:
+        try:
+            result = await scrape_dashboard(
+                account["access_key"],
+                account["observer_user_id"],
+                account["coin_type"],
+                output_dir
+            )
+            
+            if "error" in result:
+                logger.error(f"❌ Failed to process account: {account['observer_user_id']}")
+                failure_count += 1
+            else:
+                logger.info(f"✅ Successfully processed account: {account['observer_user_id']}")
+                success_count += 1
+                
+            results[account["observer_user_id"]] = result
+        except Exception as e:
+            logger.error(f"❌ Error processing account {account['observer_user_id']}: {e}")
+            failure_count += 1
     
-    # Get accounts to scrape
-    accounts = []
-    if args.access_key and args.user_id:
-        # Use command-line arguments
-        print("Using command-line arguments for account details")
-        accounts = [{
-            "account_name": args.user_id,
-            "access_key": args.access_key,
-            "user_id": args.user_id,
-            "coin_type": args.coin_type
-        }]
-    elif supabase:
-        # Fetch accounts from Supabase
-        print("Fetching accounts from Supabase...")
-        accounts = await fetch_accounts_from_supabase(supabase)
+    # Save combined results
+    combined_file = os.path.join(output_dir, "dashboard_results.json")
+    with open(combined_file, "w") as f:
+        json.dump(results, f, indent=2)
+    logger.info(f"Saved combined results to {combined_file}")
     
-    if not accounts:
-        print("❌ No accounts to scrape. Exiting.")
-        return 1
+    # Print summary
+    logger.info("\n===== Dashboard Scraper Summary =====")
+    logger.info(f"Total accounts processed: {len(accounts)}")
+    logger.info(f"Successful: {success_count}")
+    logger.info(f"Failed: {failure_count}")
     
-    print(f"✅ Found {len(accounts)} accounts to scrape")
+    if len(accounts) > 0:
+        success_rate = (success_count / len(accounts)) * 100
+        logger.info(f"Success rate: {success_rate:.1f}%")
     
-    # Initialize browser
-    print("Initializing browser...")
-    async with await setup_browser() as browser:
-        print("✅ Browser initialized successfully")
-        
-        # Process each account
-        results = []
-        for account in accounts:
-            result = await process_account(browser, args.output_dir, supabase, account)
-            results.append(result)
-        
-        # Print summary
-        success_count = sum(1 for r in results if r)
-        print("\n===== Dashboard Scraper Summary =====")
-        print(f"Total accounts processed: {len(accounts)}")
-        print(f"Successful: {success_count}")
-        print(f"Failed: {len(accounts) - success_count}")
-        print(f"Success rate: {success_count/len(accounts)*100:.1f}%")
-        print(f"Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    return 0
-
-def main():
-    """Main function."""
-    parser = argparse.ArgumentParser(description="Antpool Dashboard Scraper - Multi-Account Version")
-    parser.add_argument("--access_key", help="Antpool access key (optional if using Supabase)")
-    parser.add_argument("--user_id", help="Antpool observer user ID (optional if using Supabase)")
-    parser.add_argument("--coin_type", default="BTC", help="Coin type (default: BTC)")
-    parser.add_argument("--output_dir", default="./output", help="Output directory for JSON and screenshots")
-    parser.add_argument("--skip_supabase", action="store_true", help="Skip Supabase integration")
-    
-    args = parser.parse_args()
-    
-    # Run async main
-    try:
-        return asyncio.run(main_async(args))
-    except Exception as e:
-        print(f"❌ Error in main: {e}")
-        traceback.print_exc()
-        return 1
+    return results
 
 if __name__ == "__main__":
-    sys.exit(main())
+    asyncio.run(main())
