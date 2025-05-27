@@ -429,6 +429,57 @@ async def extract_dashboard_metrics(page):
                     console.error('Error extracting yesterday earnings:', e);
                 }
                 
+                // Extract Total Earnings
+                try {
+                    const totalEarningsNodes = findTextNodes('Total Earnings');
+                    if (totalEarningsNodes.length > 0) {
+                        for (const node of totalEarningsNodes) {
+                            // Get parent element
+                            const parent = node.parentNode;
+                            if (!parent) continue;
+                            
+                            // Look for siblings with numeric content
+                            const siblings = Array.from(parent.parentNode.children);
+                            for (const sibling of siblings) {
+                                const numericText = sibling.textContent.trim().match(/[\\d.]+/);
+                                if (numericText) {
+                                    result.totalEarnings = numericText[0].trim();
+                                    break;
+                                }
+                            }
+                            
+                            // If not found in siblings, check the parent's next sibling
+                            if (!result.totalEarnings) {
+                                const nextSibling = parent.nextElementSibling;
+                                if (nextSibling) {
+                                    const numericText = nextSibling.textContent.trim().match(/[\\d.]+/);
+                                    if (numericText) {
+                                        result.totalEarnings = numericText[0].trim();
+                                    }
+                                }
+                            }
+                            
+                            // If still not found, look for any nearby element with a decimal number
+                            if (!result.totalEarnings) {
+                                const rect = parent.getBoundingClientRect();
+                                const elements = document.querySelectorAll('*');
+                                for (const el of elements) {
+                                    if (el.textContent && /^\\s*[\\d.]+\\s*$/.test(el.textContent)) {
+                                        const elRect = el.getBoundingClientRect();
+                                        // Check if they're close to each other
+                                        if (Math.abs(rect.left - elRect.left) < 200 && Math.abs(rect.top - elRect.top) < 50) {
+                                            result.totalEarnings = el.textContent.trim();
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error extracting total earnings:', e);
+                }
+                
                 // Fallback method: extract all numeric values with their labels
                 try {
                     // Get all elements with text content
@@ -460,7 +511,8 @@ async def extract_dashboard_metrics(page):
                             (value === result.activeWorkers) ||
                             (value === result.inactiveWorkers) ||
                             (value === result.accountBalance) ||
-                            (value === result.yesterdayEarnings)
+                            (value === result.yesterdayEarnings) ||
+                            (value === result.totalEarnings)
                         ) {
                             continue;
                         }
@@ -486,6 +538,8 @@ async def extract_dashboard_metrics(page):
                                     result.accountBalance = value;
                                 } else if (labelText.includes('Yesterday Earnings') && !result.yesterdayEarnings) {
                                     result.yesterdayEarnings = value;
+                                } else if (labelText.includes('Total Earnings') && !result.totalEarnings) {
+                                    result.totalEarnings = value;
                                 }
                             }
                         }
@@ -621,7 +675,8 @@ async def scrape_dashboard(access_key, observer_user_id, coin_type="BTC", output
                     "active_workers": dashboard_data.get("activeWorkers", "0"),
                     "inactive_workers": dashboard_data.get("inactiveWorkers", "0"),
                     "account_balance": dashboard_data.get("accountBalance", "0"),
-                    "yesterday_earnings": dashboard_data.get("yesterdayEarnings", "0")
+                    "yesterday_earnings": dashboard_data.get("yesterdayEarnings", "0"),
+                    "total_earnings": dashboard_data.get("totalEarnings", "0")  # Added Total Earnings
                 }
                 
                 # Insert data into Supabase
