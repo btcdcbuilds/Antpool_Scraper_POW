@@ -86,20 +86,27 @@ async def scrape_dashboard(page, access_key, user_id, coin_type):
         # Extract hashrate metrics
         print("Extracting hashrate metrics...")
         try:
-            # Try to get 10-minute hashrate
+            # Try to get 10-minute hashrate using standard selectors
             ten_min_hashrate = await page.evaluate("""
                 () => {
-                    // Try multiple possible selectors
-                    const elements = [
-                        document.querySelector('.hashrate-item:first-child .value'),
-                        document.querySelector('div:has(> div:contains("10-Minute Hashrate")) .value'),
-                        document.querySelector('div:has(> div:contains("10-Minute")) .value'),
-                        document.querySelector('div:has(> div:contains("Minute Hashrate")) .value')
-                    ];
+                    // Try multiple possible selectors using standard JavaScript
+                    const hashrates = document.querySelectorAll('.hashrate-item .value');
+                    if (hashrates.length > 0) {
+                        return hashrates[0].textContent.trim();
+                    }
                     
-                    for (const el of elements) {
-                        if (el && el.textContent) {
-                            return el.textContent.trim();
+                    // Try by text content
+                    const allElements = document.querySelectorAll('*');
+                    for (const el of allElements) {
+                        if (el.textContent && el.textContent.includes('10-Minute') || 
+                            el.textContent && el.textContent.includes('10-Min')) {
+                            const parent = el.parentElement;
+                            if (parent) {
+                                const valueEl = parent.querySelector('.value');
+                                if (valueEl) {
+                                    return valueEl.textContent.trim();
+                                }
+                            }
                         }
                     }
                     
@@ -119,19 +126,27 @@ async def scrape_dashboard(page, access_key, user_id, coin_type):
             else:
                 print("10-minute hashrate not found")
             
-            # Try to get 24-hour hashrate
+            # Try to get 24-hour hashrate using standard selectors
             day_hashrate = await page.evaluate("""
                 () => {
-                    // Try multiple possible selectors
-                    const elements = [
-                        document.querySelector('.hashrate-item:nth-child(2) .value'),
-                        document.querySelector('div:has(> div:contains("24H Hashrate")) .value'),
-                        document.querySelector('div:has(> div:contains("24H")) .value')
-                    ];
+                    // Try multiple possible selectors using standard JavaScript
+                    const hashrates = document.querySelectorAll('.hashrate-item .value');
+                    if (hashrates.length > 1) {
+                        return hashrates[1].textContent.trim();
+                    }
                     
-                    for (const el of elements) {
-                        if (el && el.textContent) {
-                            return el.textContent.trim();
+                    // Try by text content
+                    const allElements = document.querySelectorAll('*');
+                    for (const el of allElements) {
+                        if (el.textContent && el.textContent.includes('24H') || 
+                            el.textContent && el.textContent.includes('24-hour')) {
+                            const parent = el.parentElement;
+                            if (parent) {
+                                const valueEl = parent.querySelector('.value');
+                                if (valueEl) {
+                                    return valueEl.textContent.trim();
+                                }
+                            }
                         }
                     }
                     
@@ -157,19 +172,26 @@ async def scrape_dashboard(page, access_key, user_id, coin_type):
         # Extract worker counts
         print("Extracting worker counts...")
         try:
-            # Try to get active workers
+            # Try to get active workers using standard selectors
             active_workers = await page.evaluate("""
                 () => {
-                    // Try multiple possible selectors
-                    const elements = [
-                        document.querySelector('.worker-item:first-child .value'),
-                        document.querySelector('div:has(> div:contains("Active")) .value'),
-                        document.querySelector('text=Active').closest('div').querySelector('.value')
-                    ];
+                    // Try multiple possible selectors using standard JavaScript
+                    const workers = document.querySelectorAll('.worker-item .value');
+                    if (workers.length > 0) {
+                        return workers[0].textContent.trim();
+                    }
                     
-                    for (const el of elements) {
-                        if (el && el.textContent) {
-                            return el.textContent.trim();
+                    // Try by text content
+                    const allElements = document.querySelectorAll('*');
+                    for (const el of allElements) {
+                        if (el.textContent && el.textContent.includes('Active')) {
+                            const parent = el.parentElement;
+                            if (parent) {
+                                const valueEl = parent.querySelector('.value');
+                                if (valueEl) {
+                                    return valueEl.textContent.trim();
+                                }
+                            }
                         }
                     }
                     
@@ -183,19 +205,26 @@ async def scrape_dashboard(page, access_key, user_id, coin_type):
             else:
                 print("Active workers count not found")
             
-            # Try to get inactive workers
+            # Try to get inactive workers using standard selectors
             inactive_workers = await page.evaluate("""
                 () => {
-                    // Try multiple possible selectors
-                    const elements = [
-                        document.querySelector('.worker-item:nth-child(2) .value'),
-                        document.querySelector('div:has(> div:contains("Inactive")) .value'),
-                        document.querySelector('text=Inactive').closest('div').querySelector('.value')
-                    ];
+                    // Try multiple possible selectors using standard JavaScript
+                    const workers = document.querySelectorAll('.worker-item .value');
+                    if (workers.length > 1) {
+                        return workers[1].textContent.trim();
+                    }
                     
-                    for (const el of elements) {
-                        if (el && el.textContent) {
-                            return el.textContent.trim();
+                    // Try by text content
+                    const allElements = document.querySelectorAll('*');
+                    for (const el of allElements) {
+                        if (el.textContent && el.textContent.includes('Inactive')) {
+                            const parent = el.parentElement;
+                            if (parent) {
+                                const valueEl = parent.querySelector('.value');
+                                if (valueEl) {
+                                    return valueEl.textContent.trim();
+                                }
+                            }
                         }
                     }
                     
@@ -217,16 +246,23 @@ async def scrape_dashboard(page, access_key, user_id, coin_type):
         try:
             account_balance = await page.evaluate("""
                 () => {
-                    // Try multiple possible selectors
-                    const elements = [
-                        document.querySelector('.balance-item .value'),
-                        document.querySelector('div:has(> div:contains("Account Balance")) .value'),
-                        document.querySelector('div:has(> div:contains("Balance")) .value')
-                    ];
+                    // Try multiple possible selectors using standard JavaScript
+                    const balanceEl = document.querySelector('.balance-item .value');
+                    if (balanceEl) {
+                        return balanceEl.textContent.trim();
+                    }
                     
-                    for (const el of elements) {
-                        if (el && el.textContent) {
-                            return el.textContent.trim();
+                    // Try by text content
+                    const allElements = document.querySelectorAll('*');
+                    for (const el of allElements) {
+                        if (el.textContent && el.textContent.includes('Balance')) {
+                            const parent = el.parentElement;
+                            if (parent) {
+                                const valueEl = parent.querySelector('.value');
+                                if (valueEl) {
+                                    return valueEl.textContent.trim();
+                                }
+                            }
                         }
                     }
                     
@@ -248,16 +284,24 @@ async def scrape_dashboard(page, access_key, user_id, coin_type):
         try:
             yesterday_earnings = await page.evaluate("""
                 () => {
-                    // Try multiple possible selectors
-                    const elements = [
-                        document.querySelector('.earnings-item .value'),
-                        document.querySelector('div:has(> div:contains("Yesterday Earnings")) .value'),
-                        document.querySelector('div:has(> div:contains("Earnings")) .value')
-                    ];
+                    // Try multiple possible selectors using standard JavaScript
+                    const earningsEl = document.querySelector('.earnings-item .value');
+                    if (earningsEl) {
+                        return earningsEl.textContent.trim();
+                    }
                     
-                    for (const el of elements) {
-                        if (el && el.textContent) {
-                            return el.textContent.trim();
+                    // Try by text content
+                    const allElements = document.querySelectorAll('*');
+                    for (const el of allElements) {
+                        if (el.textContent && el.textContent.includes('Yesterday') || 
+                            el.textContent && el.textContent.includes('Earnings')) {
+                            const parent = el.parentElement;
+                            if (parent) {
+                                const valueEl = parent.querySelector('.value');
+                                if (valueEl) {
+                                    return valueEl.textContent.trim();
+                                }
+                            }
                         }
                     }
                     
