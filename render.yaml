@@ -1,0 +1,102 @@
+services:
+  # Worker Scraper Service
+  - type: cron
+    name: antpool-worker-scraper
+    runtime: docker
+    plan: starter
+    schedule: "0 */3 * * *"  # Run every 3 hours
+    dockerCommand: ./start.sh
+    envVars:
+      - key: SCRIPT_NAME
+        value: antpool_worker_scraper.py
+      - key: ACCESS_KEY
+        sync: false
+      - key: USER_ID
+        sync: false
+      - key: COIN_TYPE
+        value: BTC
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+
+  # Dashboard Scraper Service
+  - type: cron
+    name: antpool-dashboard-scraper
+    runtime: docker
+    plan: starter
+    schedule: "0 */6 * * *"  # Run every 6 hours
+    dockerCommand: ./start.sh
+    envVars:
+      - key: SCRIPT_NAME
+        value: antpool_dashboard_scraper.py
+      - key: ACCESS_KEY
+        sync: false
+      - key: USER_ID
+        sync: false
+      - key: COIN_TYPE
+        value: BTC
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+
+  # Earnings Scraper Service
+  - type: cron
+    name: antpool-earnings-scraper
+    runtime: docker
+    plan: starter
+    schedule: "0 0 * * *"  # Run daily at midnight
+    dockerCommand: ./start.sh
+    envVars:
+      - key: SCRIPT_NAME
+        value: antpool_earnings_scraper.py
+      - key: ACCESS_KEY
+        sync: false
+      - key: USER_ID
+        sync: false
+      - key: COIN_TYPE
+        value: BTC
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+
+  # Inactive Workers Scraper Service
+  - type: cron
+    name: antpool-inactive-scraper
+    runtime: docker
+    plan: starter
+    schedule: "0 */12 * * *"  # Run every 12 hours
+    dockerCommand: ./start.sh
+    envVars:
+      - key: SCRIPT_NAME
+        value: antpool_inactive_scraper.py
+      - key: ACCESS_KEY
+        sync: false
+      - key: USER_ID
+        sync: false
+      - key: COIN_TYPE
+        value: BTC
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+
+  # On-Demand API Service
+  - type: web
+    name: antpool-scraper-api
+    runtime: docker
+    plan: starter
+    dockerCommand: python -m uvicorn api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ACCESS_KEY
+        sync: false
+      - key: USER_ID
+        sync: false
+      - key: COIN_TYPE
+        value: BTC
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
