@@ -1,129 +1,146 @@
 import os
-from supabase import create_client
-from dotenv import load_dotenv
+import sys
+import json
+from typing import List, Dict, Any, Optional
 
-def get_supabase_client():
-    """Get Supabase client from environment variables."""
-    # Load environment variables
-    load_dotenv()
+from supabase import create_client, Client
+
+def save_pool_stats(pool_stats: Dict[str, Any]) -> bool:
+    """Save pool statistics to Supabase.
     
-    # Get Supabase credentials
-    supabase_url = os.environ.get("SUPABASE_URL")
-    supabase_key = os.environ.get("SUPABASE_KEY")
-    
-    if not supabase_url or not supabase_key:
-        print("Supabase credentials not found in environment variables")
-        return None
-    
-    # Create Supabase client
+    Args:
+        pool_stats: Dictionary containing pool statistics
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
     try:
+        # Get Supabase credentials from environment
+        supabase_url = os.environ.get("SUPABASE_URL")
+        supabase_key = os.environ.get("SUPABASE_KEY")
+        
+        if not supabase_url or not supabase_key:
+            print("Supabase credentials not found in environment variables")
+            return False
+        
+        # Initialize Supabase client
         supabase = create_client(supabase_url, supabase_key)
-        return supabase
-    except Exception as e:
-        print(f"Error creating Supabase client: {e}")
-        return None
-
-def save_worker_stats(worker_stats):
-    """Save worker statistics to Supabase."""
-    supabase = get_supabase_client()
-    if not supabase:
-        return {"success": False, "error": "Supabase client not initialized"}
-    
-    try:
-        # Insert data into mining_workers table
-        for worker in worker_stats:
-            data = {
-                "worker_name": worker["worker"],
-                "ten_min_hashrate": worker["ten_min_hashrate"],
-                "one_h_hashrate": worker["one_h_hashrate"],
-                "h24_hashrate": worker["h24_hashrate"],
-                "rejection_rate": worker["rejection_rate"],
-                "last_share_time": worker["last_share_time"],
-                "connections_24h": worker["connections_24h"],
-                "status": worker["status"],
-                "observer_user_id": worker["observer_user_id"],
-                "coin_type": worker["coin_type"],
-                "timestamp": worker["timestamp"]
-            }
-            
-            response = supabase.table("mining_workers").insert(data).execute()
-            
-        return {"success": True, "message": f"Inserted {len(worker_stats)} records"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-def save_pool_stats(pool_stats):
-    """Save pool statistics to Supabase."""
-    supabase = get_supabase_client()
-    if not supabase:
-        return {"success": False, "error": "Supabase client not initialized"}
-    
-    try:
-        data = {
-            "ten_min_hashrate": pool_stats["ten_min_hashrate"],
-            "day_hashrate": pool_stats["day_hashrate"],
-            "active_workers": pool_stats["active_workers"],
-            "inactive_workers": pool_stats["inactive_workers"],
-            "account_balance": pool_stats["account_balance"],
-            "yesterday_earnings": pool_stats["yesterday_earnings"],
-            "observer_user_id": pool_stats["observer_user_id"],
-            "coin_type": pool_stats["coin_type"],
-            "timestamp": pool_stats["timestamp"]
-        }
         
-        response = supabase.table("mining_pool_stats").insert(data).execute()
+        # Insert pool stats into mining_pool_stats table
+        result = supabase.table("mining_pool_stats").insert(pool_stats).execute()
         
-        return {"success": True, "message": "Pool stats saved successfully"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-def save_earnings_history(earnings_history):
-    """Save earnings history to Supabase."""
-    supabase = get_supabase_client()
-    if not supabase:
-        return {"success": False, "error": "Supabase client not initialized"}
+        if hasattr(result, 'data') and result.data:
+            print(f"Successfully saved pool stats to Supabase")
+            return True
+        else:
+            print(f"Failed to save pool stats to Supabase")
+            return False
     
-    try:
-        # Insert data into mining_earnings table
-        for entry in earnings_history:
-            data = {
-                "date": entry["date"],
-                "daily_hashrate": entry["daily_hashrate"],
-                "earnings_amount": entry["earnings_amount"],
-                "earnings_currency": entry["earnings_currency"],
-                "earnings_type": entry["earnings_type"],
-                "payment_status": entry["payment_status"],
-                "observer_user_id": entry["observer_user_id"],
-                "coin_type": entry["coin_type"],
-                "timestamp": entry["timestamp"]
-            }
-            
-            response = supabase.table("mining_earnings").insert(data).execute()
-            
-        return {"success": True, "message": f"Inserted {len(earnings_history)} records"}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        print(f"Error saving pool stats to Supabase: {e}")
+        return False
 
-def save_inactive_workers(inactive_workers):
-    """Save inactive worker statistics to Supabase."""
-    supabase = get_supabase_client()
-    if not supabase:
-        return {"success": False, "error": "Supabase client not initialized"}
+def save_worker_stats(worker_stats: List[Dict[str, Any]]) -> bool:
+    """Save worker statistics to Supabase.
     
+    Args:
+        worker_stats: List of dictionaries containing worker statistics
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
     try:
-        # Insert data into mining_inactive_workers table
-        for worker in inactive_workers:
-            data = {
-                "worker_name": worker["worker_name"],
-                "last_share_time": worker["last_share_time"],
-                "inactive_duration": worker["inactive_duration"],
-                "observer_user_id": worker["observer_user_id"],
-                "coin_type": worker["coin_type"],
-                "timestamp": worker["timestamp"]
-            }
-            
-            response = supabase.table("mining_inactive_workers").insert(data).execute()
-            
-        return {"success": True, "message": f"Inserted {len(inactive_workers)} records"}
+        # Get Supabase credentials from environment
+        supabase_url = os.environ.get("SUPABASE_URL")
+        supabase_key = os.environ.get("SUPABASE_KEY")
+        
+        if not supabase_url or not supabase_key:
+            print("Supabase credentials not found in environment variables")
+            return False
+        
+        # Initialize Supabase client
+        supabase = create_client(supabase_url, supabase_key)
+        
+        # Insert worker stats into mining_workers table
+        result = supabase.table("mining_workers").insert(worker_stats).execute()
+        
+        if hasattr(result, 'data') and result.data:
+            print(f"Successfully saved {len(worker_stats)} worker stats to Supabase")
+            return True
+        else:
+            print(f"Failed to save worker stats to Supabase")
+            return False
+    
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        print(f"Error saving worker stats to Supabase: {e}")
+        return False
+
+def save_inactive_worker_stats(inactive_worker_stats: List[Dict[str, Any]]) -> bool:
+    """Save inactive worker statistics to Supabase.
+    
+    Args:
+        inactive_worker_stats: List of dictionaries containing inactive worker statistics
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Get Supabase credentials from environment
+        supabase_url = os.environ.get("SUPABASE_URL")
+        supabase_key = os.environ.get("SUPABASE_KEY")
+        
+        if not supabase_url or not supabase_key:
+            print("Supabase credentials not found in environment variables")
+            return False
+        
+        # Initialize Supabase client
+        supabase = create_client(supabase_url, supabase_key)
+        
+        # Insert inactive worker stats into mining_inactive_workers table
+        result = supabase.table("mining_inactive_workers").insert(inactive_worker_stats).execute()
+        
+        if hasattr(result, 'data') and result.data:
+            print(f"Successfully saved {len(inactive_worker_stats)} inactive worker stats to Supabase")
+            return True
+        else:
+            print(f"Failed to save inactive worker stats to Supabase")
+            return False
+    
+    except Exception as e:
+        print(f"Error saving inactive worker stats to Supabase: {e}")
+        return False
+
+def save_earnings_history(earnings_history: List[Dict[str, Any]]) -> bool:
+    """Save earnings history to Supabase.
+    
+    Args:
+        earnings_history: List of dictionaries containing earnings history
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Get Supabase credentials from environment
+        supabase_url = os.environ.get("SUPABASE_URL")
+        supabase_key = os.environ.get("SUPABASE_KEY")
+        
+        if not supabase_url or not supabase_key:
+            print("Supabase credentials not found in environment variables")
+            return False
+        
+        # Initialize Supabase client
+        supabase = create_client(supabase_url, supabase_key)
+        
+        # Insert earnings history into mining_earnings table
+        result = supabase.table("mining_earnings").insert(earnings_history).execute()
+        
+        if hasattr(result, 'data') and result.data:
+            print(f"Successfully saved {len(earnings_history)} earnings entries to Supabase")
+            return True
+        else:
+            print(f"Failed to save earnings history to Supabase")
+            return False
+    
+    except Exception as e:
+        print(f"Error saving earnings history to Supabase: {e}")
+        return False

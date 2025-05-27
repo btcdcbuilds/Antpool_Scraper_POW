@@ -1,88 +1,83 @@
 import os
-from playwright.async_api import async_playwright
+import asyncio
+from typing import Tuple, Optional
 
-async def setup_browser(playwright):
-    """Set up browser with appropriate configuration."""
-    print("Playwright started successfully")
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
+
+async def setup_browser(playwright: Playwright) -> Tuple[Browser, BrowserContext, Page]:
+    """Set up browser, context, and page for scraping.
     
+    Args:
+        playwright: Playwright instance
+        
+    Returns:
+        Tuple of browser, context, and page
+    """
     # Launch browser
-    browser = await playwright.chromium.launch(
-        headless=True,
-        args=[
-            '--disable-web-security',
-            '--disable-features=IsolateOrigins,site-per-process',
-            '--disable-site-isolation-trials'
-        ]
-    )
-    print("Browser launched successfully")
+    browser = await playwright.chromium.launch(headless=True)
     
-    # Create context with viewport and user agent
+    # Create context with viewport size
     context = await browser.new_context(
-        viewport={'width': 1920, 'height': 1080},
-        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        viewport={"width": 1920, "height": 1080},
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     )
     
     # Create page
     page = await context.new_page()
     
-    print("Browser setup complete")
+    # Set default timeout
+    page.set_default_timeout(60000)
+    
     return browser, context, page
 
-async def handle_consent_dialog(page):
-    """Handle consent dialog and cookie banners."""
-    try:
-        # Check for consent dialog
-        consent_dialog = await page.locator('text="Cookie Consent"').count()
-        if consent_dialog > 0:
-            print("Consent dialog found")
-            
-            # Try clicking "Got it" button
-            try:
-                await page.click('button:has-text("Got it")', timeout=5000)
-                print('Clicked \'Got it\' button')
-            except:
-                pass
-            
-            # Try clicking "Confirm" button
-            try:
-                await page.click('button:has-text("Confirm")', timeout=5000)
-                print('Clicked \'Confirm\' button')
-            except:
-                pass
-            
-            # Try using JavaScript to dismiss dialog
-            await page.evaluate("""() => {
-                document.querySelectorAll('button').forEach(button => {
-                    if (button.textContent.includes('Accept') || 
-                        button.textContent.includes('Got it') || 
-                        button.textContent.includes('Confirm') || 
-                        button.textContent.includes('I agree')) {
-                        button.click();
-                    }
-                });
-            }""")
-            print("Used JavaScript to dismiss consent dialog")
-            
-            # Wait for dialog to disappear
-            await page.wait_for_timeout(1000)
-            print("Consent dialog successfully dismissed")
-        else:
-            print("Consent dialog not found")
-        
-        # Check for cookie banner
-        cookie_banner = await page.locator('text="Cookie Policy"').count()
-        if cookie_banner > 0:
-            # Try clicking "Accept" button
-            try:
-                await page.click('button:has-text("Accept")', timeout=5000)
-                print('Clicked cookie banner \'Accept\' button')
-            except:
-                print("Cookie banner found but couldn't click Accept button")
-        else:
-            print("Cookie banner not found or already accepted")
+async def handle_consent_dialog(page: Page) -> bool:
+    """Handle cookie consent dialog if present.
     
+    Args:
+        page: Playwright page
+        
+    Returns:
+        bool: True if consent dialog was handled, False otherwise
+    """
+    try:
+        # Try multiple approaches to handle consent dialog
+        
+        # Approach 1: Look for common consent button text
+        for button_text in ["Accept", "Accept All", "I Accept", "Agree", "I Agree", "OK", "Continue"]:
+            button = page.locator(f"button:text-is('{button_text}')").first
+            if await button.count() > 0:
+                await button.click()
+                print(f"Clicked consent button with text: {button_text}")
+                await asyncio.sleep(1)
+                return True
+        
+        # Approach 2: Look for common consent button classes
+        for class_name in [".consent-button", ".accept-button", ".agree-button", ".cookie-accept"]:
+            button = page.locator(class_name).first
+            if await button.count() > 0:
+                await button.click()
+                print(f"Clicked consent button with class: {class_name}")
+                await asyncio.sleep(1)
+                return True
+        
+        # Approach 3: Use JavaScript to remove overlay elements
+        await page.evaluate("""() => {
+            // Remove common overlay elements
+            document.querySelectorAll('.cookie-banner, .consent-overlay, .cookie-consent, .cookie-dialog, .consent-banner, .gdpr-banner').forEach(el => el.remove());
+            
+            // Remove any elements with 'cookie' or 'consent' in the class name
+            document.querySelectorAll('[class*="cookie"], [class*="consent"], [class*="gdpr"]').forEach(el => el.remove());
+            
+            // Remove any fixed or sticky positioned elements that might be overlays
+            document.querySelectorAll('body > div[style*="position: fixed"], body > div[style*="position:fixed"]').forEach(el => el.remove());
+        }""")
+        print("Removed overlay elements using JavaScript")
+        await asyncio.sleep(1)
+        
+        # No consent dialog found or handled
+        print("No consent dialog found or already accepted")
+        return False
+        
     except Exception as e:
         print(f"Error handling consent dialog: {e}")
-        # Continue anyway
-    
-    return True
+        return False
