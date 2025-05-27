@@ -665,9 +665,9 @@ async def main():
         logger.error("❌ Failed to initialize Supabase client")
         return
     
-    # Get accounts from Supabase
+    # Get accounts from Supabase - FIXED: Using account_credentials table instead of accounts
     try:
-        response = supabase.table("accounts").select("*").eq("active", True).execute()
+        response = supabase.table("account_credentials").select("*").eq("is_active", True).execute()
         accounts = response.data
         logger.info(f"✅ Found {len(accounts)} active accounts in Supabase")
     except Exception as e:
@@ -680,23 +680,24 @@ async def main():
     
     for account in accounts:
         try:
+            # FIXED: Using correct field names from account_credentials table
             result = await scrape_dashboard(
                 account["access_key"],
-                account["observer_user_id"],
+                account["user_id"],  # Changed from observer_user_id to user_id
                 account["coin_type"],
                 output_dir
             )
             
             if "error" in result:
-                logger.error(f"❌ Failed to process account: {account['observer_user_id']}")
+                logger.error(f"❌ Failed to process account: {account['user_id']}")
                 failure_count += 1
             else:
-                logger.info(f"✅ Successfully processed account: {account['observer_user_id']}")
+                logger.info(f"✅ Successfully processed account: {account['user_id']}")
                 success_count += 1
                 
-            results[account["observer_user_id"]] = result
+            results[account["user_id"]] = result
         except Exception as e:
-            logger.error(f"❌ Error processing account {account['observer_user_id']}: {e}")
+            logger.error(f"❌ Error processing account {account['user_id']}: {e}")
             failure_count += 1
     
     # Save combined results
