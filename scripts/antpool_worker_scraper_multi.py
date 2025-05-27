@@ -12,6 +12,7 @@ import sys
 import json
 import asyncio
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -65,7 +66,14 @@ class AntpoolWorkerScraper:
         """Set up the browser for scraping."""
         logger.info("Launching browser...")
         try:
-            self.browser, self.page = await setup_browser(headless=True)
+            # Initialize browser - using the same approach as dashboard scraper
+            self.browser = await setup_browser(headless=True)
+            logger.info("Browser initialized successfully")
+            
+            # Create a new page - using the same approach as dashboard scraper
+            self.page = await self.browser.new_page()
+            self.page.set_default_timeout(15000)  # 15 second timeout
+            
             logger.info("Browser setup complete")
         except Exception as e:
             logger.error(f"CRITICAL ERROR launching browser: {str(e)}")
