@@ -5,6 +5,29 @@ from typing import List, Dict, Any, Optional
 
 from supabase import create_client, Client
 
+def get_supabase_client() -> Optional[Client]:
+    """Get a Supabase client instance.
+    
+    Returns:
+        Optional[Client]: Supabase client instance or None if credentials are missing
+    """
+    try:
+        # Get Supabase credentials from environment
+        supabase_url = os.environ.get("SUPABASE_URL")
+        supabase_key = os.environ.get("SUPABASE_KEY")
+        
+        if not supabase_url or not supabase_key:
+            print("Supabase credentials not found in environment variables")
+            return None
+        
+        # Initialize Supabase client
+        print(f"Supabase client initialized with URL: {supabase_url}")
+        return create_client(supabase_url, supabase_key)
+    
+    except Exception as e:
+        print(f"Error initializing Supabase client: {e}")
+        return None
+
 def save_pool_stats(pool_stats: Dict[str, Any]) -> bool:
     """Save pool statistics to Supabase.
     
