@@ -1,82 +1,105 @@
-# Antpool Scraper
+# Antpool Multi-Account Scraper
 
-This repository contains scripts for scraping mining statistics from Antpool's observer page. It's designed to be deployed on Render.com for automated scraping and data collection.
+This repository contains scripts for scraping Antpool mining pool data across multiple accounts, with support for multiple clients, sites, and providers.
 
 ## Features
 
-- Scrapes worker statistics, dashboard metrics, earnings history, and inactive workers
-- Automatically saves data to Supabase database
-- Includes scheduled jobs via Render.com cron services
-- Provides an API for on-demand scraping
-- Fully containerized for easy deployment
+- **Multi-Account Support**: Scrape data from unlimited Antpool accounts
+- **Client/Site Organization**: Organize accounts by client, site, and provider
+- **Robust Error Handling**: Automatic retries, failure isolation, and detailed logging
+- **Supabase Integration**: Store credentials and mining data in Supabase
+- **Render.com Deployment**: Easy deployment to Render.com for scheduled execution
+
+## Architecture
+
+### Database Schema
+
+The system uses Supabase for storing both credentials and mining data:
+
+#### Account Credentials Table
+```sql
+CREATE TABLE IF NOT EXISTS account_credentials (
+    id SERIAL PRIMARY KEY,
+    account_name TEXT NOT NULL,
+    access_key TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    coin_type TEXT NOT NULL DEFAULT 'BTC',
+    client_id TEXT,                -- Client/company identifier
+    site_id TEXT,                  -- Site identifier within client
+    provider TEXT DEFAULT 'Antpool', -- Service provider
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    priority INTEGER NOT NULL DEFAULT 1,
+    last_scraped_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+### Error Handling
+
+The multi-account scrapers include comprehensive error handling:
+
+1. **Individual Account Isolation**: If one account fails, others continue processing
+2. **Automatic Retry Logic**: Failed accounts are retried with exponential backoff
+3. **Detailed Logging**: All errors are logged with timestamps and account details
+4. **Failure Recovery**: If a scraper crashes mid-execution, it will resume from where it left off
+5. **Network Error Handling**: Temporary network issues are handled with retries
+6. **Page Load Failures**: If a website doesn't load, the script waits and retries
+
+## Setup Instructions
+
+### 1. Supabase Setup
+
+1. Create the required tables in Supabase using the SQL in `supabase_create_tables.sql`
+2. Add your account credentials to the `account_credentials` table
+
+### 2. Render.com Setup
+
+1. Connect your GitHub repository to Render.com
+2. Configure environment variables for each service:
+   - `SUPABASE_URL`: Your Supabase project URL
+   - `SUPABASE_KEY`: Your Supabase service role key
+   - `SCRIPT_NAME`: The multi-account script to run (e.g., `antpool_worker_scraper_multi.py`)
 
 ## Scripts
 
-- `antpool_worker_scraper.py`: Scrapes active worker statistics
-- `antpool_dashboard_scraper.py`: Scrapes dashboard metrics (hashrates, worker counts, etc.)
-- `antpool_earnings_scraper.py`: Scrapes earnings history
-- `antpool_inactive_scraper.py`: Scrapes inactive worker statistics
+- `antpool_worker_scraper_multi.py`: Scrapes worker statistics for all accounts
+- `antpool_dashboard_scraper_multi.py`: Scrapes dashboard metrics for all accounts
+- `antpool_earnings_scraper_multi.py`: Scrapes earnings history for all accounts
+- `antpool_inactive_scraper_multi.py`: Scrapes inactive worker data for all accounts
 
-## Deployment
+## Utilities
 
-This repository is configured for easy deployment on Render.com using the included `render.yaml` blueprint.
+- `utils/supabase_utils.py`: Utilities for Supabase integration
+- `utils/browser_utils.py`: Utilities for browser automation
+- `utils/data_utils.py`: Utilities for data processing
 
-### Prerequisites
+## Maintenance
 
-1. A Supabase account with tables created using the SQL scripts
-2. A Render.com account
-3. Your Antpool observer access credentials
+### Adding New Accounts
 
-### Deployment Steps
+To add new accounts, simply insert them into the `account_credentials` table in Supabase:
 
-1. Fork or clone this repository
-2. Connect your GitHub repository to Render.com
-3. Set up the required environment variables:
-   - `ACCESS_KEY`: Your Antpool access key
-   - `USER_ID`: Your Antpool user ID
-   - `COIN_TYPE`: Cryptocurrency type (default: BTC)
-   - `SUPABASE_URL`: Your Supabase project URL
-   - `SUPABASE_KEY`: Your Supabase API key
-
-## Local Development
-
-### Setup
-
-1. Clone the repository
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   python -m playwright install chromium
-   ```
-
-3. Create a `.env` file with your credentials:
-   ```
-   ACCESS_KEY=your_access_key
-   USER_ID=your_user_id
-   COIN_TYPE=BTC
-   SUPABASE_URL=your_supabase_url
-   SUPABASE_KEY=your_supabase_key
-   ```
-
-### Running Scripts
-
-Run any of the scripts with:
-
-```bash
-python scripts/antpool_worker_scraper.py --access_key=YOUR_ACCESS_KEY --user_id=YOUR_USER_ID --coin_type=BTC --output_dir=./output
+```sql
+INSERT INTO account_credentials 
+(account_name, access_key, user_id, coin_type, client_id, site_id, provider, is_active, priority)
+VALUES 
+('AccountName', 'access_key_value', 'user_id_value', 'BTC', 'client_name', 'site_name', 'Antpool', true, 1);
 ```
 
-## API Usage
+### Prioritizing Accounts
 
-When deployed, the API provides endpoints for on-demand scraping:
+To prioritize certain accounts, increase their `priority` value (higher numbers = higher priority).
 
-- `GET /`: Check if the API is running
-- `GET /health`: Check API health status
-- `POST /run/worker`: Run the worker scraper
-- `POST /run/dashboard`: Run the dashboard scraper
-- `POST /run/earnings`: Run the earnings scraper
-- `POST /run/inactive`: Run the inactive workers scraper
+### Disabling Accounts
 
-## License
+To disable an account, set its `is_active` field to `false`.
 
-MIT
+## Troubleshooting
+
+If you encounter issues:
+
+1. Check the Render.com service logs for error messages
+2. Verify that your Supabase credentials are correct
+3. Ensure all required tables exist in your Supabase database
+4. Check that the GitHub repository has the latest version of all scripts
