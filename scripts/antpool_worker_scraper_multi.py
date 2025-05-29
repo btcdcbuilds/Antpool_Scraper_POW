@@ -33,13 +33,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from utils.browser_utils import setup_browser, handle_consent_dialog, take_screenshot
     from utils.data_utils import save_json_to_file, format_timestamp
-    from utils.supabase_utils import get_supabase_client
+    from utils.supabase_utils import get_supabase_client, filter_schema_fields_list
 except ImportError:
     # Fallback for direct script execution
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
     from utils.browser_utils import setup_browser, handle_consent_dialog, take_screenshot
     from utils.data_utils import save_json_to_file, format_timestamp
-    from utils.supabase_utils import get_supabase_client
+    from utils.supabase_utils import get_supabase_client, filter_schema_fields_list
 
 async def scrape_workers(page: Any, access_key: str, user_id: str, coin_type: str, debug: bool = False) -> List[Dict[str, Any]]:
     """Scrape worker statistics from Antpool with retry logic."""
@@ -322,8 +322,8 @@ async def _process_worker_row(row: Any, user_id: str, coin_type: str, page_num: 
     
     # Determine worker status based on last share time
     last_share = worker_data["last_share_time"].lower()
-    worker_data["is_active"] = not ("day" in last_share or "week" in last_share or "month" in last_share)
-    worker_data["status"] = "active" if worker_data["is_active"] else "inactive"
+    is_active = not ("day" in last_share or "week" in last_share or "month" in last_share)
+    worker_data["status"] = "active" if is_active else "inactive"
     
     return worker_data
 
@@ -346,9 +346,12 @@ async def save_to_supabase(supabase, workers_data):
     """Save worker data to Supabase with error handling."""
     if not supabase or not workers_data:
         return False
+    
+    # Filter worker data to include only fields in the schema
+    filtered_workers_data = filter_schema_fields_list(workers_data, "mining_workers")
         
     try:
-        result = supabase.table("mining_workers").insert(workers_data).execute()
+        result = supabase.table("mining_workers").insert(filtered_workers_data).execute()
         if hasattr(result, 'data'):
             logger.info(f"Saved {len(workers_data)} workers to Supabase")
             return True
@@ -409,13 +412,12 @@ async def process_single_client(access_key, user_id, coin_type, output_dir, debu
                 "timestamp": format_timestamp(),
                 "observer_user_id": user_id,
                 "coin_type": coin_type,
-                "is_active": False,
                 "status": "inactive"
             }]
         
         logger.info("===== Worker Extraction Summary =====")
         logger.info(f"Total workers extracted: {len(workers_data)}")
-        active_workers = sum(1 for w in workers_data if w.get("is_active", False))
+        active_workers = sum(1 for w in workers_data if w.get("status", "") == "active")
         inactive_workers = len(workers_data) - active_workers
         logger.info(f"Active workers: {active_workers}")
         logger.info(f"Inactive workers: {inactive_workers}")
@@ -429,8 +431,11 @@ async def process_single_client(access_key, user_id, coin_type, output_dir, debu
             batch_size = 100
             logger.info(f"Using batch size of {batch_size} workers per request")
             
+            # Filter worker data to include only fields in the schema
+            filtered_workers_data = filter_schema_fields_list(workers_data, "mining_workers")
+            
             # Split workers into batches
-            batches = [workers_data[i:i + batch_size] for i in range(0, len(workers_data), batch_size)]
+            batches = [filtered_workers_data[i:i + batch_size] for i in range(0, len(filtered_workers_data), batch_size)]
             
             success_count = 0
             for i, batch in enumerate(batches):
@@ -460,7 +465,16 @@ async def process_single_client(access_key, user_id, coin_type, output_dir, debu
             logger.info("===== Supabase Upload Summary =====")
             logger.info(f"Total workers: {len(workers_data)}")
             logger.info(f"Successfully uploaded: {success_count}")
-            logger.info(f"Failed to upload: {len(workers_data) - success_count}")
+            logger.info(f"Failed: {len(workers_data) - success_count}")
+            logger.info(f"Success rate: {(success_count / len(workers_data)) * 100:.1f}%")
+            
+            # Update last_scraped_at for this account
+            try:
+                result = supabase.table("account_credentials").update({"last_scraped_at": datetime.now().isoformat()}).eq("user_id", user_id).execute()
+                if hasattr(result, 'data'):
+                    logger.info(f"✅ Updated last_scraped_at for {user_id}")
+            except Exception as e:
+                logger.error(f"❌ Error updating last_scraped_at for {user_id}: {str(e)}")
         else:
             logger.warning("Supabase client not available, skipping upload")
         
@@ -517,6 +531,9 @@ async def main():
     os.makedirs(output_dir, exist_ok=True)
     
     # Process each account
+    successful_accounts = 0
+    failed_accounts = 0
+    
     for account in accounts:
         try:
             logger.info(f"Processing account: {account['user_id']} ({account['coin_type']})")
@@ -527,17 +544,27 @@ async def main():
                 output_dir
             )
             
-            if not result["success"]:
+            if result["success"]:
+                successful_accounts += 1
+                logger.info(f"✅ Successfully processed account: {account['user_id']}")
+            else:
+                failed_accounts += 1
                 logger.error(f"Failed to scrape workers for {account['user_id']}")
             
             # Wait 5 seconds between accounts to avoid rate limiting
             await asyncio.sleep(5)
             
         except Exception as e:
+            failed_accounts += 1
             logger.error(f"Error processing account {account['user_id']}: {str(e)}")
             continue
     
-    logger.info("All accounts processed")
+    logger.info("===== Worker Scraper Summary =====")
+    logger.info(f"Total accounts processed: {len(accounts)}")
+    logger.info(f"Successful: {successful_accounts}")
+    logger.info(f"Failed: {failed_accounts}")
+    logger.info(f"Success rate: {(successful_accounts / len(accounts)) * 100:.1f}%")
+    logger.info(f"Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if __name__ == "__main__":
     asyncio.run(main())
