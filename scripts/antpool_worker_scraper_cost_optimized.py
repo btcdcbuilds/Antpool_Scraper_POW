@@ -529,6 +529,10 @@ async def main():
     parser.add_argument('--total-groups', type=int, default=3, help='Total number of groups (default: 3)')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode with screenshots')
     parser.add_argument('--output-dir', type=str, help='Output directory for files')
+    # Additional arguments for compatibility with start.sh
+    parser.add_argument('--access_key', type=str, help='Access key for Antpool API (compatibility)')
+    parser.add_argument('--user_id', type=str, help='User ID for Antpool API (compatibility)')
+    parser.add_argument('--coin_type', type=str, help='Coin type for Antpool API (compatibility)')
     args = parser.parse_args()
     
     # Validate group number
