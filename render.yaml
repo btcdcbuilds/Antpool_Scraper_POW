@@ -1,62 +1,53 @@
 services:
-  # Worker Scraper Service
+  # Worker Scraper Service - Group 1
   - type: cron
-    name: antpool-worker-scraper
+    name: antpool-worker-scraper-group1
     runtime: docker
     plan: starter
     schedule: "0 */3 * * *"  # Run every 3 hours
-    dockerCommand: ./start.sh
+    dockerCommand: python scripts/antpool_worker_scraper_cost_optimized.py --group=1 --total-groups=3 --max-concurrent=3
     envVars:
-      - key: SCRIPT_NAME
-        value: antpool_worker_scraper.py
-      - key: ACCESS_KEY
-        sync: false
-      - key: USER_ID
-        sync: false
-      - key: COIN_TYPE
-        value: BTC
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_KEY
         sync: false
 
-  # Dashboard Scraper Service
+  # Worker Scraper Service - Group 2
   - type: cron
-    name: antpool-dashboard-scraper
+    name: antpool-worker-scraper-group2
     runtime: docker
     plan: starter
-    schedule: "0 */6 * * *"  # Run every 6 hours
-    dockerCommand: ./start.sh
+    schedule: "5 */3 * * *"  # Run every 3 hours, 5 minutes offset
+    dockerCommand: python scripts/antpool_worker_scraper_cost_optimized.py --group=2 --total-groups=3 --max-concurrent=3
     envVars:
-      - key: SCRIPT_NAME
-        value: antpool_dashboard_scraper.py
-      - key: ACCESS_KEY
-        sync: false
-      - key: USER_ID
-        sync: false
-      - key: COIN_TYPE
-        value: BTC
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_KEY
         sync: false
 
-  # Earnings Scraper Service
+  # Worker Scraper Service - Group 3
   - type: cron
-    name: antpool-earnings-scraper
+    name: antpool-worker-scraper-group3
     runtime: docker
     plan: starter
-    schedule: "0 0 * * *"  # Run daily at midnight
+    schedule: "10 */3 * * *"  # Run every 3 hours, 10 minutes offset
+    dockerCommand: python scripts/antpool_worker_scraper_cost_optimized.py --group=3 --total-groups=3 --max-concurrent=3
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+
+  # Dashboard + Earnings Combined Scraper Service (Daily Report)
+  - type: cron
+    name: antpool-daily-report-scraper
+    runtime: docker
+    plan: starter
+    schedule: "0 1 * * *"  # Run daily at 1 AM
     dockerCommand: ./start.sh
     envVars:
       - key: SCRIPT_NAME
-        value: antpool_earnings_scraper.py
-      - key: ACCESS_KEY
-        sync: false
-      - key: USER_ID
-        sync: false
-      - key: COIN_TYPE
-        value: BTC
+        value: antpool_combined_daily_scraper.py
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_KEY
@@ -67,17 +58,11 @@ services:
     name: antpool-inactive-scraper
     runtime: docker
     plan: starter
-    schedule: "0 */12 * * *"  # Run every 12 hours
+    schedule: "*/30 * * * *"  # Run every 30 minutes
     dockerCommand: ./start.sh
     envVars:
       - key: SCRIPT_NAME
-        value: antpool_inactive_scraper.py
-      - key: ACCESS_KEY
-        sync: false
-      - key: USER_ID
-        sync: false
-      - key: COIN_TYPE
-        value: BTC
+        value: antpool_inactive_scraper_multi.py
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_KEY
@@ -90,12 +75,6 @@ services:
     plan: starter
     dockerCommand: python -m uvicorn api:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: ACCESS_KEY
-        sync: false
-      - key: USER_ID
-        sync: false
-      - key: COIN_TYPE
-        value: BTC
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_KEY

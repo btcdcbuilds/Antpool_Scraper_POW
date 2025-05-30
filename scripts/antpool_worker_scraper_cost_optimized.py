@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-Antpool Worker Scraper - Cost-Optimized Version
+Antpool Worker Scraper - Hybrid Parallel + Browser Reuse Version
 
-This script scrapes worker statistics from Antpool with improved error handling,
-retry logic, and performance optimizations including reduced wait times, browser reuse,
-and pool group splitting for multi-instance deployment.
+This script scrapes worker statistics from Antpool with optimal performance,
+combining parallel processing with browser reuse for maximum efficiency.
 """
 
 import os
@@ -29,34 +28,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Add project root to path for imports
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if PROJECT_ROOT not in sys.path:
-    sys.path.append(PROJECT_ROOT)
+# Add parent directory to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from Antpool_Scraper_POW.utils.browser_utils import setup_browser, handle_consent_dialog, take_screenshot
-    from Antpool_Scraper_POW.utils.data_utils import save_json_to_file, format_timestamp
-    from Antpool_Scraper_POW.utils.supabase_utils import get_supabase_client, filter_schema_fields_list
-except ImportError:
-    # Fallback for direct script execution
-    try:
-        from utils.browser_utils import setup_browser, handle_consent_dialog, take_screenshot
-        from utils.data_utils import save_json_to_file, format_timestamp
-        from utils.supabase_utils import get_supabase_client, filter_schema_fields_list
-    except ImportError:
-        # Final fallback for github_update directory structure
-        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'github_update')))
-        from Antpool_Scraper_POW.utils.browser_utils import setup_browser, handle_consent_dialog, take_screenshot
-        from Antpool_Scraper_POW.utils.data_utils import save_json_to_file, format_timestamp
-        from Antpool_Scraper_POW.utils.supabase_utils import get_supabase_client, filter_schema_fields_list
+    from utils.browser_utils import setup_browser, handle_consent_dialog, take_screenshot
+    from utils.data_utils import save_json_to_file, format_timestamp
+    from utils.supabase_utils import get_supabase_client, filter_schema_fields_list
+except ImportError as e:
+    logger.error(f"Import error: {e}")
+    sys.exit(1)
 
 async def scrape_workers(page: Any, access_key: str, user_id: str, coin_type: str, debug: bool = False) -> List[Dict[str, Any]]:
     """Scrape worker statistics from Antpool with retry logic."""
     logger.info(f"Starting worker scrape for {user_id} ({coin_type})")
     
     max_retries = 3
-    retry_delay = 2  # seconds - reduced from 5
+    retry_delay = 2  # seconds
     
     for attempt in range(max_retries):
         try:
@@ -67,31 +55,31 @@ async def scrape_workers(page: Any, access_key: str, user_id: str, coin_type: st
             
             # Handle informed consent dialog
             try:
-                await page.wait_for_selector('text="INFORMED CONSENT"', timeout=5000)  # reduced from 10000
-                await page.click('text="Got it"')  # Check the checkbox
-                await asyncio.sleep(0.5)  # reduced from 1
-                await page.click('button:has-text("Confirm")')  # Click confirm
+                await page.wait_for_selector('text="INFORMED CONSENT"', timeout=3000)
+                await page.click('text="Got it"')
+                await asyncio.sleep(0.3)
+                await page.click('button:has-text("Confirm")')
                 logger.info("Consent dialog handled")
             except Exception as e:
                 logger.debug(f"No consent dialog or error handling it: {e}")
             
-            # Wait for page to load completely - reduced from 3 seconds
-            await asyncio.sleep(1)
+            # Wait for page to load
+            await asyncio.sleep(0.5)
             
-            # The Worker tab should already be active, verify we can see the table
-            await page.wait_for_selector('text="Worker"', timeout=10000)  # reduced from 15000
+            # The Worker tab should already be active
+            await page.wait_for_selector('text="Worker"', timeout=8000)
             logger.info("Worker tab found")
             
             # Wait for worker table to load
-            await page.wait_for_selector('table', timeout=10000)  # reduced from 15000
+            await page.wait_for_selector('table', timeout=8000)
             logger.info("Worker table loaded successfully")
 
             # Set page size to 80 (maximum available)
             try:
                 await page.click('text="10 /page"')
-                await asyncio.sleep(0.5)  # reduced from 1
+                await asyncio.sleep(0.3)
                 await page.click('text="80 /page"')
-                await asyncio.sleep(1.5)  # reduced from 3
+                await asyncio.sleep(1)
                 logger.info("Page size set to 80")
             except Exception as e:
                 logger.warning(f"Could not set page size: {e}")
@@ -115,98 +103,49 @@ async def _extract_worker_data(page: Any, user_id: str, coin_type: str, debug: b
         total_workers = 0
         total_pages = 1
         try:
-            # Wait for pagination to load - reduced from 2 seconds
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
             
-            # Try multiple approaches to find pagination info
-            pagination_text = None
-            
-            # Method 1: Look for "Total X items" text anywhere on the page
+            # Look for "Total X items" text anywhere on the page
             try:
                 page_content = await page.content()
                 total_match = re.search(r'Total (\d+) items', page_content, re.IGNORECASE)
                 if total_match:
                     total_workers = int(total_match.group(1))
-                    pagination_text = f"Total {total_workers} items"
-                    logger.info(f"Found total workers from page content: {total_workers}")
+                    logger.info(f"Found total workers: {total_workers}")
             except Exception as e:
                 logger.debug(f"Method 1 failed: {e}")
-            
-            # Method 2: Look for pagination elements with text content
-            if not pagination_text:
-                try:
-                    # Look for elements containing "Total" and numbers
-                    elements = await page.query_selector_all('*')
-                    for element in elements:
-                        try:
-                            text = await element.text_content()
-                            if text and 'Total' in text and 'items' in text:
-                                match = re.search(r'Total (\d+) items', text, re.IGNORECASE)
-                                if match:
-                                    total_workers = int(match.group(1))
-                                    pagination_text = text.strip()
-                                    logger.info(f"Found pagination text: {pagination_text}")
-                                    break
-                        except:
-                            continue
-                except Exception as e:
-                    logger.debug(f"Method 2 failed: {e}")
-            
-            # Method 3: Count pagination buttons to estimate pages
-            if total_workers == 0:
-                try:
-                    # Look for numbered pagination buttons
-                    page_buttons = await page.query_selector_all('button[class*="pagination"], .ant-pagination-item, a[class*="page"]')
-                    page_numbers = []
-                    for button in page_buttons:
-                        try:
-                            text = await button.text_content()
-                            if text and text.isdigit():
-                                page_numbers.append(int(text))
-                        except:
-                            continue
-                    
-                    if page_numbers:
-                        estimated_pages = max(page_numbers)
-                        total_workers = estimated_pages * 80  # Estimate based on 80 per page
-                        total_pages = estimated_pages
-                        logger.info(f"Estimated from pagination buttons: {estimated_pages} pages, ~{total_workers} workers")
-                except Exception as e:
-                    logger.debug(f"Method 3 failed: {e}")
             
             # Calculate total pages if we found total workers
             if total_workers > 0:
                 total_pages = (total_workers + 79) // 80  # Ceiling division for 80 per page
             else:
-                # Final fallback: check if there are next/pagination buttons
+                # Fallback: check if there are next/pagination buttons
                 try:
                     next_buttons = await page.query_selector_all('button[aria-label="Next page"], .ant-pagination-next, button:has-text(">")')
                     total_pages = 2 if next_buttons else 1
-                    logger.info(f"Final fallback: Set total_pages to {total_pages} based on next button presence")
+                    logger.info(f"Fallback: Set total_pages to {total_pages}")
                 except:
                     total_pages = 1
             
-            logger.info(f"Pagination text: {pagination_text}")
             logger.info(f"Total workers: {total_workers}, Total pages: {total_pages}")
         except Exception as e:
             logger.warning(f"Could not get pagination info: {e}")
             total_pages = 1
         
-        # Process pages dynamically - continue until no more pages
+        # Process pages dynamically
         page_num = 1
         max_pages = max(total_pages, 10)  # Safety limit
         
         while page_num <= max_pages:
             logger.info(f"Processing page {page_num} (estimated total: {total_pages})")
             
-            # Wait for table to be stable - reduced from 2 seconds
-            await asyncio.sleep(0.5)
+            # Wait for table to be stable
+            await asyncio.sleep(0.3)
             
             # Get table rows
             rows = await page.query_selector_all('table tbody tr')
             logger.info(f"Found {len(rows)} rows on page {page_num}")
             
-            # If no rows found, we might be done
             if not rows:
                 logger.info(f"No rows found on page {page_num}, stopping pagination")
                 break
@@ -219,7 +158,6 @@ async def _extract_worker_data(page: Any, user_id: str, coin_type: str, debug: b
                     if worker_data:
                         workers_data.append(worker_data)
                         page_workers += 1
-                        logger.debug(f"Extracted worker: {worker_data['worker']}")
                         
                 except Exception as e:
                     logger.error(f"Error processing row {row_idx + 1}: {str(e)}")
@@ -229,14 +167,12 @@ async def _extract_worker_data(page: Any, user_id: str, coin_type: str, debug: b
             
             # Check if there's a next page
             try:
-                # Try multiple selectors for next button
                 next_button = None
                 next_selectors = [
                     'button[aria-label="Next page"]:not([disabled])',
                     '.ant-pagination-next:not([disabled])',
                     'button:has-text(">"):not([disabled])',
-                    'li.ant-pagination-next:not(.ant-pagination-disabled) button',
-                    'button[title="Next Page"]:not([disabled])'
+                    'li.ant-pagination-next:not(.ant-pagination-disabled) button'
                 ]
                 
                 for selector in next_selectors:
@@ -244,23 +180,9 @@ async def _extract_worker_data(page: Any, user_id: str, coin_type: str, debug: b
                         buttons = await page.query_selector_all(selector)
                         if buttons:
                             next_button = buttons[0]
-                            logger.debug(f"Found next button with selector: {selector}")
                             break
                     except:
                         continue
-                
-                if not next_button:
-                    # Try to find any clickable pagination element with number > current page
-                    try:
-                        page_buttons = await page.query_selector_all('button, a')
-                        for button in page_buttons:
-                            text = await button.text_content()
-                            if text and text.isdigit() and int(text) == page_num + 1:
-                                next_button = button
-                                logger.debug(f"Found next page button with number: {text}")
-                                break
-                    except:
-                        pass
                 
                 if not next_button:
                     logger.info(f"No enabled next button found, finished at page {page_num}")
@@ -269,21 +191,14 @@ async def _extract_worker_data(page: Any, user_id: str, coin_type: str, debug: b
                 # Check if next button is disabled
                 is_disabled = await next_button.get_attribute('disabled')
                 class_name = await next_button.get_attribute('class') or ''
-                parent_class = ''
-                try:
-                    parent = await next_button.query_selector('..')
-                    if parent:
-                        parent_class = await parent.get_attribute('class') or ''
-                except:
-                    pass
                 
-                if is_disabled or 'disabled' in class_name or 'disabled' in parent_class:
+                if is_disabled or 'disabled' in class_name:
                     logger.info(f"Next button is disabled, finished at page {page_num}")
                     break
                 
                 # Click next page
                 await next_button.click()
-                await asyncio.sleep(1.5)  # reduced from 3
+                await asyncio.sleep(1)
                 logger.info(f"Navigated to page {page_num + 1}")
                 page_num += 1
                 
@@ -306,7 +221,7 @@ async def _process_worker_row(row: Any, user_id: str, coin_type: str, page_num: 
     
     # Extract text from each cell
     cell_texts = []
-    for i, cell in enumerate(cells[:9]):  # Get up to 9 cells
+    for i, cell in enumerate(cells[:9]):
         text = await cell.inner_text()
         cell_texts.append(text.strip())
     
@@ -315,8 +230,7 @@ async def _process_worker_row(row: Any, user_id: str, coin_type: str, page_num: 
     if not worker_name or "Worker" in worker_name or worker_name == "No filter data":
         return None
     
-    # Create worker data with correct cell mapping
-    # Based on our testing: [empty, empty, worker_name, 10min_hash, 1h_hash, 24h_hash, rejection, last_share, connections]
+    # Create worker data
     worker_data = {
         "worker": cell_texts[2] if len(cell_texts) > 2 else "",
         "ten_min_hashrate": cell_texts[3] if len(cell_texts) > 3 else "",
@@ -330,179 +244,161 @@ async def _process_worker_row(row: Any, user_id: str, coin_type: str, page_num: 
         "coin_type": coin_type
     }
     
-    # Determine worker status based on last share time
+    # Determine worker status
     last_share = worker_data["last_share_time"].lower()
     is_active = not ("day" in last_share or "week" in last_share or "month" in last_share)
     worker_data["status"] = "active" if is_active else "inactive"
     
     return worker_data
 
-async def take_workers_screenshot(page, output_dir, user_id, timestamp_str):
-    """Take a screenshot of the workers page."""
-    try:
-        # Wait for workers table to be visible
-        await page.wait_for_selector("table", timeout=5000)  # reduced from 10000
-        
-        # Take screenshot
-        screenshot_path = os.path.join(output_dir, f"{timestamp_str}_Antpool_BTC_workers.png")
-        await take_screenshot(page, screenshot_path)
-        logger.info(f"Saved workers screenshot to {screenshot_path}")
-        return screenshot_path
-    except Exception as e:
-        logger.error(f"Error taking screenshot: {str(e)}")
-        return None
-
-async def save_to_supabase(supabase, workers_data):
-    """Save worker data to Supabase with error handling."""
-    if not supabase or not workers_data:
-        return False
+async def process_accounts_with_browser_reuse(accounts: List[Dict[str, Any]], output_dir: str, max_concurrent: int = 3, debug: bool = False) -> List[Dict[str, Any]]:
+    """Process accounts in parallel using browser reuse for optimal performance."""
     
-    # Filter worker data to include only fields in the schema
-    filtered_workers_data = filter_schema_fields_list(workers_data, "mining_workers")
-        
-    try:
-        result = supabase.table("mining_workers").insert(filtered_workers_data).execute()
-        if hasattr(result, 'data'):
-            logger.info(f"Saved {len(workers_data)} workers to Supabase")
-            return True
-        return False
-    except Exception as e:
-        logger.error(f"Error saving workers to Supabase: {str(e)}")
-        return False
-
-async def process_account_with_shared_browser(browser, account, output_dir, debug=False):
-    """Process a single account using a shared browser instance."""
-    page = None
+    # Split accounts into chunks for each browser
+    chunk_size = (len(accounts) + max_concurrent - 1) // max_concurrent
+    account_chunks = [accounts[i:i + chunk_size] for i in range(0, len(accounts), chunk_size)]
     
-    try:
-        logger.info(f"Processing account: {account['user_id']} ({account['coin_type']})")
+    logger.info(f"🔥 Splitting {len(accounts)} accounts into {len(account_chunks)} browser workers")
+    for i, chunk in enumerate(account_chunks):
+        logger.info(f"   Browser {i+1}: {len(chunk)} accounts ({[acc['user_id'] for acc in chunk]})")
+    
+    async def process_chunk_with_shared_browser(chunk: List[Dict[str, Any]], browser_id: int) -> List[Dict[str, Any]]:
+        """Process a chunk of accounts with a shared browser."""
+        browser = None
+        results = []
         
-        # Setup timestamp for filenames
-        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Create a new page in the shared browser
-        page = await browser.new_page()
-        
-        # Scrape workers
-        workers_data = await scrape_workers(page, account["access_key"], account["user_id"], account["coin_type"], debug)
-        
-        # Take screenshot if debug mode is enabled
-        screenshot_path = None
-        if debug:
-            screenshot_path = await take_workers_screenshot(page, output_dir, account["user_id"], timestamp_str)
-        
-        # Save worker data to file
-        output_file = os.path.join(output_dir, f"{timestamp_str}_Antpool_{account['coin_type']}_workers.json")
-        save_json_to_file(workers_data, output_file)
-        logger.info(f"Saved worker data to {output_file}")
-        
-        # If no workers were found, create a placeholder entry
-        if not workers_data:
-            logger.warning("No worker data extracted, creating placeholder entry")
-            workers_data = [{
-                "worker": "No workers found",
-                "ten_min_hashrate": "0 TH/s",
-                "one_h_hashrate": "0 TH/s",
-                "h24_hashrate": "0 TH/s",
-                "rejection_rate": "0%",
-                "last_share_time": "Never",
-                "connections_24h": "0",
-                "timestamp": format_timestamp(),
-                "observer_user_id": account["user_id"],
-                "coin_type": account["coin_type"],
-                "status": "inactive"
-            }]
-        
-        logger.info("===== Worker Extraction Summary =====")
-        logger.info(f"Total workers extracted: {len(workers_data)}")
-        active_workers = sum(1 for w in workers_data if w.get("status", "") == "active")
-        inactive_workers = len(workers_data) - active_workers
-        logger.info(f"Active workers: {active_workers}")
-        logger.info(f"Inactive workers: {inactive_workers}")
-        
-        # Save to Supabase
-        supabase = get_supabase_client()
-        if supabase:
-            logger.info(f"===== Uploading {len(workers_data)} Workers to Supabase =====")
+        try:
+            logger.info(f"🚀 Browser {browser_id}: Starting with {len(chunk)} accounts")
             
-            # Use batch uploads for better performance
-            batch_size = 100
-            logger.info(f"Using batch size of {batch_size} workers per request")
+            # Create one browser for this chunk
+            browser = await setup_browser(headless=True)
+            logger.info(f"✅ Browser {browser_id}: Launched successfully")
             
-            # Filter worker data to include only fields in the schema
-            filtered_workers_data = filter_schema_fields_list(workers_data, "mining_workers")
-            
-            # Split workers into batches
-            batches = [filtered_workers_data[i:i + batch_size] for i in range(0, len(filtered_workers_data), batch_size)]
-            
-            success_count = 0
-            for i, batch in enumerate(batches):
+            # Process each account in this chunk sequentially
+            for i, account in enumerate(chunk):
+                page = None
                 try:
-                    logger.info(f"Uploading batch {i+1}/{len(batches)} ({len(batch)} workers)")
-                    result = supabase.table("mining_workers").insert(batch).execute()
-                    if hasattr(result, 'data'):
-                        success_count += len(batch)
-                        logger.info(f"Batch {i+1}/{len(batches)} uploaded successfully")
-                    else:
-                        logger.error(f"❌ Error uploading batch {i+1}/{len(batches)}: {result}")
-                        # Fallback to individual inserts
-                        logger.info(f"Falling back to individual inserts for batch {i+1}")
-                        individual_success = 0
-                        for worker in batch:
-                            try:
-                                result = supabase.table("mining_workers").insert(worker).execute()
-                                if hasattr(result, 'data'):
-                                    success_count += 1
-                                    individual_success += 1
-                            except Exception as e:
-                                logger.error(f"❌ Error saving worker {worker.get('worker', 'unknown')}: {str(e)}")
-                        logger.info(f"Individual inserts: {individual_success}/{len(batch)} workers saved successfully")
+                    logger.info(f"🔄 Browser {browser_id}: Processing account {i+1}/{len(chunk)} - {account['user_id']}")
+                    
+                    # Create new page for this account
+                    page = await browser.new_page()
+                    
+                    # Scrape workers for this account
+                    workers_data = await scrape_workers(page, account["access_key"], account["user_id"], account["coin_type"], debug)
+                    
+                    # Save worker data to file
+                    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    output_file = os.path.join(output_dir, f"{timestamp_str}_Antpool_{account['coin_type']}_workers_{account['user_id']}.json")
+                    save_json_to_file(workers_data, output_file)
+                    
+                    # Handle empty results
+                    if not workers_data:
+                        logger.warning(f"⚠️ Browser {browser_id}: No worker data for {account['user_id']}, creating placeholder")
+                        workers_data = [{
+                            "worker": "No workers found",
+                            "ten_min_hashrate": "0 TH/s",
+                            "one_h_hashrate": "0 TH/s", 
+                            "h24_hashrate": "0 TH/s",
+                            "rejection_rate": "0%",
+                            "last_share_time": "Never",
+                            "connections_24h": "0",
+                            "timestamp": format_timestamp(),
+                            "observer_user_id": account["user_id"],
+                            "coin_type": account["coin_type"],
+                            "status": "inactive"
+                        }]
+                    
+                    # Calculate stats
+                    active_workers = sum(1 for w in workers_data if w.get("status", "") == "active")
+                    inactive_workers = len(workers_data) - active_workers
+                    
+                    logger.info(f"📊 Browser {browser_id}: {account['user_id']} - {len(workers_data)} total, {active_workers} active, {inactive_workers} inactive")
+                    
+                    # Save to Supabase
+                    supabase = get_supabase_client()
+                    if supabase:
+                        # Filter and batch upload
+                        filtered_workers_data = filter_schema_fields_list(workers_data, "mining_workers")
+                        
+                        try:
+                            # Try batch insert first
+                            result = supabase.table("mining_workers").insert(filtered_workers_data).execute()
+                            if hasattr(result, 'data'):
+                                logger.info(f"📤 Browser {browser_id}: Uploaded {len(workers_data)} workers for {account['user_id']}")
+                            else:
+                                # Fallback to individual inserts
+                                success_count = 0
+                                for worker in filtered_workers_data:
+                                    try:
+                                        result = supabase.table("mining_workers").insert(worker).execute()
+                                        if hasattr(result, 'data'):
+                                            success_count += 1
+                                    except Exception as e:
+                                        logger.error(f"❌ Error saving individual worker: {str(e)}")
+                                logger.info(f"📤 Browser {browser_id}: Uploaded {success_count}/{len(workers_data)} workers for {account['user_id']} (individual)")
+                        except Exception as e:
+                            logger.error(f"❌ Browser {browser_id}: Error uploading workers for {account['user_id']}: {str(e)}")
+                        
+                        # Update last_scraped_at
+                        try:
+                            result = supabase.table("account_credentials").update({
+                                "last_scraped_at": datetime.now().isoformat()
+                            }).eq("user_id", account["user_id"]).execute()
+                        except Exception as e:
+                            logger.error(f"❌ Error updating last_scraped_at: {str(e)}")
+                    
+                    # Add result
+                    results.append({
+                        "account": account,
+                        "result": {
+                            "success": True,
+                            "worker_count": len(workers_data),
+                            "active_workers": active_workers,
+                            "inactive_workers": inactive_workers
+                        }
+                    })
+                    
                 except Exception as e:
-                    logger.error(f"❌ Error uploading batch {i+1}/{len(batches)}: {str(e)}")
+                    logger.error(f"❌ Browser {browser_id}: Error processing {account['user_id']}: {str(e)}")
+                    results.append({
+                        "account": account,
+                        "result": {
+                            "success": False,
+                            "error": str(e)
+                        }
+                    })
+                
+                finally:
+                    if page:
+                        await page.close()
+                        logger.info(f"🧹 Browser {browser_id}: Closed page for {account['user_id']}")
             
-            logger.info("===== Supabase Upload Summary =====")
-            logger.info(f"Total workers: {len(workers_data)}")
-            logger.info(f"Successfully uploaded: {success_count}")
-            logger.info(f"Failed: {len(workers_data) - success_count}")
-            logger.info(f"Success rate: {(success_count / len(workers_data)) * 100:.1f}%")
+            return results
             
-            # Update last_scraped_at for this account
-            try:
-                result = supabase.table("account_credentials").update({"last_scraped_at": datetime.now().isoformat()}).eq("user_id", account["user_id"]).execute()
-                if hasattr(result, 'data'):
-                    logger.info(f"✅ Updated last_scraped_at for {account['user_id']}")
-            except Exception as e:
-                logger.error(f"❌ Error updating last_scraped_at for {account['user_id']}: {str(e)}")
-        else:
-            logger.warning("Supabase client not available, skipping upload")
-        
-        logger.info("===== Worker Scraping Completed Successfully =====")
-        logger.info(f"Account: {account['user_id']} ({account['coin_type']})")
-        logger.info(f"Total workers extracted: {len(workers_data)}")
-        logger.info(f"Worker stats saved to: {output_file}")
-        
-        return {
-            "success": True,
-            "workers_count": len(workers_data),
-            "active_workers": active_workers,
-            "inactive_workers": inactive_workers,
-            "output_file": output_file,
-            "screenshot_path": screenshot_path
-        }
-        
-    except Exception as e:
-        logger.error(f"Error during worker scraping: {str(e)}")
-        logger.error(f"No worker data scraped")
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        except Exception as e:
+            logger.error(f"❌ Browser {browser_id} error: {str(e)}")
+            return []
+            
+        finally:
+            if browser:
+                await browser.close()
+                logger.info(f"🧹 Browser {browser_id}: Closed browser")
     
-    finally:
-        # Close only the page, not the browser
-        if page:
-            await page.close()
-            logger.info(f"Closed page for account {account['user_id']}")
+    # Create tasks for each chunk
+    tasks = []
+    for i, chunk in enumerate(account_chunks):
+        if chunk:  # Only create tasks for non-empty chunks
+            task = asyncio.create_task(process_chunk_with_shared_browser(chunk, i + 1))
+            tasks.append(task)
+    
+    # Wait for all tasks to complete
+    results = []
+    if tasks:
+        chunk_results = await asyncio.gather(*tasks)
+        for chunk_result in chunk_results:
+            results.extend(chunk_result)
+    
+    return results
 
 def get_account_group(accounts, group_number, total_groups):
     """Get a subset of accounts for the specified group number."""
@@ -524,9 +420,10 @@ def get_account_group(accounts, group_number, total_groups):
 
 async def main():
     """Main entry point for the script."""
-    parser = argparse.ArgumentParser(description='Antpool Worker Scraper - Cost-Optimized Version')
-    parser.add_argument('--group', type=int, default=1, help='Group number to process (default: 1)')
+    parser = argparse.ArgumentParser(description='Antpool Worker Scraper - Hybrid Parallel + Browser Reuse Version')
+    parser.add_argument('--group', '--group', type=int, default=1, help='Group number to process (default: 1)')
     parser.add_argument('--total-groups', '--total_groups', type=int, default=3, help='Total number of groups (default: 3)')
+    parser.add_argument('--max-concurrent', '--max_concurrent', type=int, default=3, help='Maximum concurrent browsers (default: 3)')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode with screenshots')
     parser.add_argument('--output-dir', '--output_dir', type=str, help='Output directory for files')
     # Additional arguments for compatibility with start.sh
@@ -573,46 +470,34 @@ async def main():
     # Start timing
     start_time = datetime.now()
     logger.info(f"Starting worker scraper at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info(f"Processing {len(group_accounts)} accounts in group {args.group}/{args.total_groups}")
+    logger.info(f"📋 Accounts in this group: {len(group_accounts)}")
+    logger.info(f"🔥 Max concurrent browsers: {args.max_concurrent}")
+    logger.info(f"💡 Strategy: {args.max_concurrent} browsers, each reused for multiple accounts")
     
-    # Setup a single browser instance to be shared by all accounts
-    browser, _ = await setup_browser(headless=True)
+    # Process accounts with hybrid approach
+    results = await process_accounts_with_browser_reuse(group_accounts, output_dir, args.max_concurrent, args.debug)
     
-    try:
-        # Process each account with the shared browser
-        results = []
-        for account in group_accounts:
-            result = await process_account_with_shared_browser(browser, account, output_dir, args.debug)
-            results.append({
-                "account": account,
-                "result": result
-            })
-            # Small delay between accounts to avoid rate limiting
-            await asyncio.sleep(1)
-        
-        # Summarize results
-        successful_accounts = sum(1 for r in results if r["result"]["success"])
-        failed_accounts = len(results) - successful_accounts
-        
-        end_time = datetime.now()
-        duration = end_time - start_time
-        
-        logger.info("===== Worker Scraper Summary =====")
-        logger.info(f"Group: {args.group}/{args.total_groups}")
-        logger.info(f"Total accounts processed: {len(group_accounts)}")
-        logger.info(f"Successful: {successful_accounts}")
-        logger.info(f"Failed: {failed_accounts}")
-        logger.info(f"Success rate: {(successful_accounts / len(group_accounts)) * 100:.1f}%")
-        logger.info(f"Started at: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"Completed at: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"Total duration: {duration.total_seconds():.1f} seconds")
-        logger.info(f"Average time per account: {duration.total_seconds() / len(group_accounts):.1f} seconds")
+    # Summarize results
+    successful_accounts = sum(1 for r in results if r["result"]["success"])
+    failed_accounts = len(results) - successful_accounts
     
-    finally:
-        # Close the shared browser
-        if browser:
-            await browser.close()
-            logger.info("Closed shared browser")
+    end_time = datetime.now()
+    duration = end_time - start_time
+    
+    logger.info("=" * 60)
+    logger.info("📊 HYBRID SCRAPER SUMMARY")
+    logger.info("=" * 60)
+    logger.info(f"🏷️  Group: {args.group}/{args.total_groups}")
+    logger.info(f"📋 Total accounts processed: {len(group_accounts)}")
+    logger.info(f"✅ Successful: {successful_accounts}")
+    logger.info(f"❌ Failed: {failed_accounts}")
+    logger.info(f"📈 Success rate: {(successful_accounts / len(group_accounts)) * 100:.1f}%")
+    logger.info(f"⏰ Started at: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"🏁 Completed at: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"⏱️  Total duration: {duration.total_seconds():.1f} seconds")
+    logger.info(f"⚡ Average time per account: {duration.total_seconds() / len(group_accounts):.1f} seconds")
+    logger.info(f"🔥 Browser efficiency: {args.max_concurrent} browsers reused across {len(group_accounts)} accounts")
+    logger.info("=" * 60)
 
 if __name__ == "__main__":
     asyncio.run(main())
