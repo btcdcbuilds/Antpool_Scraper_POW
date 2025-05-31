@@ -80,13 +80,12 @@ async def scrape_workers(page: Any, access_key: str, user_id: str, coin_type: st
             # Wait for page to load completely
             await asyncio.sleep(1)
             
-            # The Worker tab should already be active, verify we can see the text first
-            # This is critical - matches the working script's approach
-            await page.wait_for_selector('text="Worker"', timeout=10000)
-            logger.info("Worker tab found")
+            # Skip the Worker text check entirely and go directly to table detection
+            # This avoids the timeout issue with the Worker text selector
+            logger.info("Waiting for worker table to load...")
             
-            # Now wait for worker table to load
-            await page.wait_for_selector('table', timeout=10000)
+            # Wait for worker table to load
+            await page.wait_for_selector('table', timeout=15000)
             logger.info("Worker table loaded successfully")
             
             # Set page size to 80 (maximum available)
