@@ -50,28 +50,74 @@ async def scrape_workers(page: Any, access_key: str, user_id: str, coin_type: st
         try:
             # Navigate to observer page
             observer_url = f"https://www.antpool.com/observer?accessKey={access_key}&coinType={coin_type}&observerUserId={user_id}"
-            await page.goto(observer_url, wait_until="domcontentloaded")
+            await page.goto(observer_url, wait_until="networkidle")
             logger.info(f"Navigated to observer page for {user_id}")
             
             # Handle informed consent dialog
             try:
-                await page.wait_for_selector('text="INFORMED CONSENT"', timeout=3000)
+                await page.wait_for_selector('text="INFORMED CONSENT"', timeout=5000)
                 await page.click('text="Got it"')
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.5)
                 await page.click('button:has-text("Confirm")')
                 logger.info("Consent dialog handled")
             except Exception as e:
                 logger.debug(f"No consent dialog or error handling it: {e}")
             
-            # Wait for page to load
-            await asyncio.sleep(0.5)
+            # Wait for page to fully load
+            await asyncio.sleep(1.5)
             
-            # The Worker tab should already be active
-            await page.wait_for_selector('text="Worker"', timeout=8000)
-            logger.info("Worker tab found")
+            # Try multiple selectors to find the Worker tab or content
+            worker_found = False
             
-            # Wait for worker table to load
-            await page.wait_for_selector('table', timeout=8000)
+            # Method 1: Look for "Worker" text
+            try:
+                await page.wait_for_selector('text="Worker"', timeout=15000)
+                worker_found = True
+                logger.info("Worker tab found via text selector")
+            except Exception as e:
+                logger.warning(f"Could not find Worker tab via text selector: {e}")
+                
+                # Method 2: Try alternative selectors
+                try:
+                    # Try to find tab elements or table headers
+                    selectors = [
+                        '.ant-tabs-tab', 
+                        'table', 
+                        'th',
+                        'div[role="tab"]',
+                        'button:has-text("Worker")',
+                        'a:has-text("Worker")'
+                    ]
+                    
+                    for selector in selectors:
+                        try:
+                            elements = await page.query_selector_all(selector)
+                            if elements:
+                                for element in elements:
+                                    text = await element.text_content()
+                                    if text and "Worker" in text:
+                                        await element.click()
+                                        worker_found = True
+                                        logger.info(f"Worker tab found via alternative selector: {selector}")
+                                        break
+                            if worker_found:
+                                break
+                        except Exception as inner_e:
+                            logger.debug(f"Error with selector {selector}: {inner_e}")
+                except Exception as alt_e:
+                    logger.warning(f"Alternative selectors failed: {alt_e}")
+            
+            # If debug mode, take a screenshot to help diagnose issues
+            if debug and not worker_found:
+                try:
+                    screenshot_path = f"/tmp/debug_worker_tab_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                    await page.screenshot(path=screenshot_path)
+                    logger.info(f"Debug screenshot saved to {screenshot_path}")
+                except Exception as ss_e:
+                    logger.warning(f"Could not take debug screenshot: {ss_e}")
+            
+            # Wait for worker table to load with increased timeout
+            await page.wait_for_selector('table', timeout=15000)
             logger.info("Worker table loaded successfully")
 
             # Set page size to 80 (maximum available)
