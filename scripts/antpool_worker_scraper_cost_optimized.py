@@ -63,12 +63,15 @@ async def scrape_workers(page: Any, access_key: str, user_id: str, coin_type: st
             except Exception as e:
                 logger.debug(f"No consent dialog or error handling it: {e}")
             
-            # Clear any modals that might be present
+            # Clear any modals that might be present - critical for reliable scraping
             try:
                 await page.evaluate("""() => {
                     document.querySelectorAll('.ant-modal-close').forEach(el => el.click());
                     document.querySelectorAll('.ant-modal-mask').forEach(el => el.remove());
                     document.querySelectorAll('.ant-modal-wrap').forEach(el => el.remove());
+                    // Additional cleanup for other potential overlays
+                    document.querySelectorAll('.ant-message').forEach(el => el.remove());
+                    document.querySelectorAll('.ant-notification').forEach(el => el.remove());
                 }""")
                 logger.info("Cleared any modal elements")
             except Exception as e:
@@ -77,19 +80,159 @@ async def scrape_workers(page: Any, access_key: str, user_id: str, coin_type: st
             # Wait for page to load
             await asyncio.sleep(1)
             
-            # Wait for worker table to load - Worker tab is active by default
-            await page.wait_for_selector('table', timeout=10000)
+            # Try multiple approaches to find the worker table
+            table_found = False
+            
+            # Method 1: Direct table selector
+            try:
+                await page.wait_for_selector('table', timeout=8000)
+                table_found = True
+                logger.info("Worker table found via direct selector")
+            except Exception as e:
+                logger.warning(f"Could not find table via direct selector: {e}")
+                
+                # Method 2: Look for table-related elements
+                try:
+                    selectors = [
+                        'tbody',
+                        '.ant-table',
+                        '.ant-table-wrapper',
+                        'div[class*="table"]',
+                        'th'
+                    ]
+                    
+                    for selector in selectors:
+                        try:
+                            element = await page.wait_for_selector(selector, timeout=5000)
+                            if element:
+                                table_found = True
+                                logger.info(f"Table-related element found via selector: {selector}")
+                                break
+                        except Exception as inner_e:
+                            logger.debug(f"Selector {selector} not found: {inner_e}")
+                except Exception as alt_e:
+                    logger.warning(f"Alternative table selectors failed: {alt_e}")
+                
+                # Method 3: Check if we can find pagination elements
+                if not table_found:
+                    try:
+                        pagination_selectors = [
+                            '.ant-pagination',
+                            'ul[class*="pagination"]',
+                            'button[aria-label="Next page"]',
+                            '.ant-pagination-item'
+                        ]
+                        
+                        for selector in pagination_selectors:
+                            try:
+                                element = await page.wait_for_selector(selector, timeout=3000)
+                                if element:
+                                    table_found = True
+                                    logger.info(f"Pagination element found via selector: {selector}")
+                                    break
+                            except Exception as inner_e:
+                                logger.debug(f"Pagination selector {selector} not found: {inner_e}")
+                    except Exception as pag_e:
+                        logger.warning(f"Pagination selectors failed: {pag_e}")
+            
+            # If we still haven't found the table, try one last approach - look for worker data in page content
+            if not table_found:
+                try:
+                    # Check if page content contains worker-related text
+                    content = await page.content()
+                    if "Worker" in content and ("Hashrate" in content or "TH/s" in content or "PH/s" in content):
+                        table_found = True
+                        logger.info("Worker data found in page content")
+                except Exception as content_e:
+                    logger.warning(f"Content check failed: {content_e}")
+            
+            # If debug mode and table not found, take a screenshot
+            if debug and not table_found:
+                try:
+                    screenshot_path = f"/tmp/debug_table_missing_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                    await page.screenshot(path=screenshot_path)
+                    logger.info(f"Debug screenshot saved to {screenshot_path}")
+                except Exception as ss_e:
+                    logger.warning(f"Could not take debug screenshot: {ss_e}")
+            
+            # If we still haven't found the table, try to refresh the page
+            if not table_found:
+                try:
+                    logger.warning("Table not found, attempting page refresh")
+                    await page.reload(wait_until="domcontentloaded")
+                    await asyncio.sleep(2)
+                    
+                    # Clear modals again after refresh
+                    await page.evaluate("""() => {
+                        document.querySelectorAll('.ant-modal-close').forEach(el => el.click());
+                        document.querySelectorAll('.ant-modal-mask').forEach(el => el.remove());
+                        document.querySelectorAll('.ant-modal-wrap').forEach(el => el.remove());
+                    }""")
+                    
+                    # Check for table again
+                    await page.wait_for_selector('table', timeout=8000)
+                    table_found = True
+                    logger.info("Worker table found after page refresh")
+                except Exception as refresh_e:
+                    logger.error(f"Table not found even after refresh: {refresh_e}")
+                    raise Exception("Could not find worker table after multiple attempts")
+            
             logger.info("Worker table loaded successfully")
 
-            # Set page size to 80 (maximum available)
+            # Set page size to 80 (maximum available) with more robust selectors
             try:
-                await page.click('text="10 /page"')
-                await asyncio.sleep(0.3)
-                await page.click('text="80 /page"')
-                await asyncio.sleep(1)
-                logger.info("Page size set to 80")
+                # Try multiple approaches to set page size
+                page_size_set = False
+                
+                # Method 1: Text-based selector
+                try:
+                    await page.click('text="10 /page"')
+                    await asyncio.sleep(0.5)
+                    await page.click('text="80 /page"')
+                    page_size_set = True
+                except Exception as e:
+                    logger.debug(f"Method 1 for page size failed: {e}")
+                
+                # Method 2: Class-based selector
+                if not page_size_set:
+                    try:
+                        await page.click('.ant-select-selection-item')
+                        await asyncio.sleep(0.5)
+                        await page.click('div[title="80 / page"]')
+                        page_size_set = True
+                    except Exception as e:
+                        logger.debug(f"Method 2 for page size failed: {e}")
+                
+                # Method 3: Try to find any element with "page" text
+                if not page_size_set:
+                    try:
+                        elements = await page.query_selector_all('*')
+                        for element in elements:
+                            text = await element.text_content()
+                            if text and "/page" in text:
+                                await element.click()
+                                await asyncio.sleep(0.5)
+                                
+                                # Now try to find and click 80/page option
+                                options = await page.query_selector_all('div[class*="select-item"]')
+                                for option in options:
+                                    option_text = await option.text_content()
+                                    if "80" in option_text:
+                                        await option.click()
+                                        page_size_set = True
+                                        break
+                                
+                                if page_size_set:
+                                    break
+                    except Exception as e:
+                        logger.debug(f"Method 3 for page size failed: {e}")
+                
+                # Wait longer after setting page size to ensure table updates
+                await asyncio.sleep(1.5)
+                logger.info(f"Page size set to 80: {page_size_set}")
             except Exception as e:
                 logger.warning(f"Could not set page size: {e}")
+                # Continue anyway - this is not critical
             
             workers_data = await _extract_worker_data(page, user_id, coin_type, debug)
             return workers_data
