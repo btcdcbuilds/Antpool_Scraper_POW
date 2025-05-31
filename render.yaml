@@ -5,7 +5,7 @@ services:
     runtime: docker
     plan: starter
     schedule: "0 */3 * * *"  # Run every 3 hours
-    dockerCommand: python scripts/antpool_worker_scraper_cost_optimized.py --group=1 --total-groups=3 --max-concurrent=3
+    dockerCommand: python scripts/antpool_worker_scraper_hybrid.py --group=1 --total-groups=3 --max-concurrent=3
     envVars:
       - key: SUPABASE_URL
         sync: false
@@ -18,7 +18,7 @@ services:
     runtime: docker
     plan: starter
     schedule: "5 */3 * * *"  # Run every 3 hours, 5 minutes offset
-    dockerCommand: python scripts/antpool_worker_scraper_cost_optimized.py --group=2 --total-groups=3 --max-concurrent=3
+    dockerCommand: python scripts/antpool_worker_scraper_hybrid.py --group=2 --total-groups=3 --max-concurrent=3
     envVars:
       - key: SUPABASE_URL
         sync: false
@@ -31,7 +31,7 @@ services:
     runtime: docker
     plan: starter
     schedule: "10 */3 * * *"  # Run every 3 hours, 10 minutes offset
-    dockerCommand: python scripts/antpool_worker_scraper_cost_optimized.py --group=3 --total-groups=3 --max-concurrent=3
+    dockerCommand: python scripts/antpool_worker_scraper_hybrid.py --group=3 --total-groups=3 --max-concurrent=3
     envVars:
       - key: SUPABASE_URL
         sync: false
