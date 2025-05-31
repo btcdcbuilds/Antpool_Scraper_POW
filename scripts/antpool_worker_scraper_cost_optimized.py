@@ -77,108 +77,18 @@ async def scrape_workers(page: Any, access_key: str, user_id: str, coin_type: st
             except Exception as e:
                 logger.debug(f"Error clearing modals: {e}")
             
-            # Wait for page to load
+            # Wait for page to load completely
             await asyncio.sleep(1)
             
-            # Try multiple approaches to find the worker table
-            table_found = False
+            # The Worker tab should already be active, verify we can see the text first
+            # This is critical - matches the working script's approach
+            await page.wait_for_selector('text="Worker"', timeout=10000)
+            logger.info("Worker tab found")
             
-            # Method 1: Direct table selector
-            try:
-                await page.wait_for_selector('table', timeout=8000)
-                table_found = True
-                logger.info("Worker table found via direct selector")
-            except Exception as e:
-                logger.warning(f"Could not find table via direct selector: {e}")
-                
-                # Method 2: Look for table-related elements
-                try:
-                    selectors = [
-                        'tbody',
-                        '.ant-table',
-                        '.ant-table-wrapper',
-                        'div[class*="table"]',
-                        'th'
-                    ]
-                    
-                    for selector in selectors:
-                        try:
-                            element = await page.wait_for_selector(selector, timeout=5000)
-                            if element:
-                                table_found = True
-                                logger.info(f"Table-related element found via selector: {selector}")
-                                break
-                        except Exception as inner_e:
-                            logger.debug(f"Selector {selector} not found: {inner_e}")
-                except Exception as alt_e:
-                    logger.warning(f"Alternative table selectors failed: {alt_e}")
-                
-                # Method 3: Check if we can find pagination elements
-                if not table_found:
-                    try:
-                        pagination_selectors = [
-                            '.ant-pagination',
-                            'ul[class*="pagination"]',
-                            'button[aria-label="Next page"]',
-                            '.ant-pagination-item'
-                        ]
-                        
-                        for selector in pagination_selectors:
-                            try:
-                                element = await page.wait_for_selector(selector, timeout=3000)
-                                if element:
-                                    table_found = True
-                                    logger.info(f"Pagination element found via selector: {selector}")
-                                    break
-                            except Exception as inner_e:
-                                logger.debug(f"Pagination selector {selector} not found: {inner_e}")
-                    except Exception as pag_e:
-                        logger.warning(f"Pagination selectors failed: {pag_e}")
-            
-            # If we still haven't found the table, try one last approach - look for worker data in page content
-            if not table_found:
-                try:
-                    # Check if page content contains worker-related text
-                    content = await page.content()
-                    if "Worker" in content and ("Hashrate" in content or "TH/s" in content or "PH/s" in content):
-                        table_found = True
-                        logger.info("Worker data found in page content")
-                except Exception as content_e:
-                    logger.warning(f"Content check failed: {content_e}")
-            
-            # If debug mode and table not found, take a screenshot
-            if debug and not table_found:
-                try:
-                    screenshot_path = f"/tmp/debug_table_missing_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                    await page.screenshot(path=screenshot_path)
-                    logger.info(f"Debug screenshot saved to {screenshot_path}")
-                except Exception as ss_e:
-                    logger.warning(f"Could not take debug screenshot: {ss_e}")
-            
-            # If we still haven't found the table, try to refresh the page
-            if not table_found:
-                try:
-                    logger.warning("Table not found, attempting page refresh")
-                    await page.reload(wait_until="domcontentloaded")
-                    await asyncio.sleep(2)
-                    
-                    # Clear modals again after refresh
-                    await page.evaluate("""() => {
-                        document.querySelectorAll('.ant-modal-close').forEach(el => el.click());
-                        document.querySelectorAll('.ant-modal-mask').forEach(el => el.remove());
-                        document.querySelectorAll('.ant-modal-wrap').forEach(el => el.remove());
-                    }""")
-                    
-                    # Check for table again
-                    await page.wait_for_selector('table', timeout=8000)
-                    table_found = True
-                    logger.info("Worker table found after page refresh")
-                except Exception as refresh_e:
-                    logger.error(f"Table not found even after refresh: {refresh_e}")
-                    raise Exception("Could not find worker table after multiple attempts")
-            
+            # Now wait for worker table to load
+            await page.wait_for_selector('table', timeout=10000)
             logger.info("Worker table loaded successfully")
-
+            
             # Set page size to 80 (maximum available) with more robust selectors
             try:
                 # Try multiple approaches to set page size
@@ -232,8 +142,7 @@ async def scrape_workers(page: Any, access_key: str, user_id: str, coin_type: st
                 logger.info(f"Page size set to 80: {page_size_set}")
             except Exception as e:
                 logger.warning(f"Could not set page size: {e}")
-                # Continue anyway - this is not critical
-            
+                # Continue anyway - this is not critical   
             workers_data = await _extract_worker_data(page, user_id, coin_type, debug)
             return workers_data
             
