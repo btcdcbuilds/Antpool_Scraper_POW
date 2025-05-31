@@ -78,78 +78,16 @@ async def scrape_workers(page: Any, access_key: str, user_id: str, coin_type: st
                 logger.debug(f"Error clearing modals: {e}")
             
             # Wait for page to load completely
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
             
-            # Skip Worker tab check and go directly to table detection
-            # This avoids the timeout issue with the Worker text selector
-            logger.info("Waiting for worker table to load...")
+            # The Worker tab should already be active, verify we can see the text first
+            # This is critical - matches the working script's approach
+            await page.wait_for_selector('text="Worker"', timeout=10000)
+            logger.info("Worker tab found")
             
-            # Try multiple approaches to find the table
-            table_found = False
-            
-            # Approach 1: Direct table selector
-            try:
-                await page.wait_for_selector('table', timeout=15000)
-                table_found = True
-                logger.info("Worker table found with direct selector")
-            except Exception as e:
-                logger.warning(f"Could not find table with direct selector: {e}")
-            
-            # Approach 2: Look for table-related elements
-            if not table_found:
-                try:
-                    selectors = ['tbody', '.ant-table', 'th', '[role="grid"]']
-                    for selector in selectors:
-                        try:
-                            await page.wait_for_selector(selector, timeout=5000)
-                            table_found = True
-                            logger.info(f"Table-related element found with selector: {selector}")
-                            break
-                        except:
-                            continue
-                except Exception as e:
-                    logger.warning(f"Could not find table-related elements: {e}")
-            
-            # Approach 3: Check if we can find pagination elements
-            if not table_found:
-                try:
-                    pagination_selectors = ['.ant-pagination', 'button:has-text("/page")', 'li.ant-pagination-item']
-                    for selector in pagination_selectors:
-                        try:
-                            await page.wait_for_selector(selector, timeout=5000)
-                            table_found = True
-                            logger.info(f"Pagination element found with selector: {selector}")
-                            break
-                        except:
-                            continue
-                except Exception as e:
-                    logger.warning(f"Could not find pagination elements: {e}")
-            
-            # If table still not found, try refreshing the page
-            if not table_found:
-                logger.warning("Table not found with any method, refreshing page...")
-                await page.reload(wait_until="domcontentloaded")
-                await asyncio.sleep(3)
-                
-                # Clear modals again after refresh
-                try:
-                    await page.evaluate("""() => {
-                        document.querySelectorAll('.ant-modal-close').forEach(el => el.click());
-                        document.querySelectorAll('.ant-modal-mask').forEach(el => el.remove());
-                        document.querySelectorAll('.ant-modal-wrap').forEach(el => el.remove());
-                    }""")
-                    logger.info("Cleared modals after page refresh")
-                except:
-                    pass
-                
-                # Try direct table selector again
-                try:
-                    await page.wait_for_selector('table', timeout=10000)
-                    table_found = True
-                    logger.info("Table found after page refresh")
-                except Exception as e:
-                    logger.error(f"Still could not find table after refresh: {e}")
-                    raise Exception("Could not find worker table after multiple attempts")
+            # Now wait for worker table to load
+            await page.wait_for_selector('table', timeout=10000)
+            logger.info("Worker table loaded successfully")
             
             # Set page size to 80 (maximum available)
             try:

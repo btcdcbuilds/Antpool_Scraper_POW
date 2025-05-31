@@ -10,9 +10,9 @@ The `antpool_worker_scraper_hybrid.py` script combines the proven extraction log
 
 #### Features:
 - Multi-browser architecture with browser reuse
-- Robust table detection with multiple fallback methods
 - Group-based processing for distributed workloads
-- Enhanced error recovery mechanisms
+- Maintains the original working extraction logic
+- Optimized for performance with multiple pools
 
 #### Usage:
 ```bash
@@ -69,16 +69,3 @@ The following environment variables must be set in Render.com:
 
 - `SUPABASE_URL`: Your Supabase project URL
 - `SUPABASE_KEY`: Your Supabase API key
-
-## Troubleshooting
-
-### Worker Table Detection
-
-The worker scraper uses multiple approaches to detect the worker table:
-
-1. Direct table selector
-2. Table-related elements (tbody, .ant-table, etc.)
-3. Pagination elements
-4. Page refresh with additional modal cleanup
-
-If you encounter issues with table detection, check the logs for specific error messages and ensure your Antpool account has workers to display.
