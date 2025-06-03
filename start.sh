@@ -10,4 +10,4 @@ mkdir -p /app/output
 
 # Run the specified script
 echo "Starting Antpool scraper: $SCRIPT_NAME"
-python scripts/$SCRIPT_NAME --access_key=$ACCESS_KEY --user_id=$USER_ID --coin_type=$COIN_TYPE --output_dir=/app/output
+python scripts/$SCRIPT_NAME --use_supabase --output_dir=/app/output
