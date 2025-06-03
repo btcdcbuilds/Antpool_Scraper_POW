@@ -8,9 +8,11 @@ setting the page size to 80 results per page.
 
 Usage:
     python3 antpool_worker_scraper.py --access_key=<access_key> --user_id=<observer_user_id> --coin_type=<coin_type> --output_dir=<output_dir>
+    python3 antpool_worker_scraper.py --use_supabase --output_dir=<output_dir>
 
 Example:
     python3 antpool_worker_scraper.py --access_key=eInFJrwSbrtDheJHTygV --user_id=Mack81 --coin_type=BTC --output_dir=/home/user/output
+    python3 antpool_worker_scraper.py --use_supabase --output_dir=/home/user/output
 """
 
 import argparse
@@ -30,7 +32,7 @@ import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from utils.browser_utils import setup_browser, handle_consent_dialog
 from utils.data_utils import save_json_data
-from utils.supabase_utils import save_worker_stats
+from utils.supabase_utils import save_worker_stats, get_active_accounts
 
 async def extract_worker_stats(page, frame, output_dir, observer_user_id, coin_type):
     """Extract worker statistics from the worker table."""
@@ -193,24 +195,11 @@ async def extract_worker_stats(page, frame, output_dir, observer_user_id, coin_t
     print(f"Total workers extracted: {len(all_workers)}")
     return all_workers, screenshot_path
 
-async def main():
-    """Main function."""
-    parser = argparse.ArgumentParser(description="Antpool Worker Stats Scraper")
-    parser.add_argument("--access_key", required=True, help="Access key for the observer page")
-    parser.add_argument("--user_id", required=True, help="Observer user ID")
-    parser.add_argument("--coin_type", default="BTC", help="Coin type (default: BTC)")
-    parser.add_argument("--output_dir", help="Output directory for JSON and screenshots")
-    
-    args = parser.parse_args()
-    
-    # Set default output directory if not provided
-    if not args.output_dir:
-        args.output_dir = os.path.join(os.getcwd(), "output")
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(args.output_dir, exist_ok=True)
-    
-    print(f"Starting Antpool worker scraper for {args.user_id} ({args.coin_type})...")
+async def process_account(access_key, user_id, coin_type, output_dir):
+    """Process a single account."""
+    print(f"\n==================================================")
+    print(f"Processing account: {user_id} ({coin_type})")
+    print(f"==================================================")
     
     async with async_playwright() as playwright:
         # Launch browser
@@ -219,7 +208,7 @@ async def main():
         
         try:
             # Navigate to observer page
-            observer_url = f"https://www.antpool.com/observer?accessKey={args.access_key}&coinType={args.coin_type}&observerUserId={args.user_id}"
+            observer_url = f"https://www.antpool.com/observer?accessKey={access_key}&coinType={coin_type}&observerUserId={user_id}"
             print(f"Navigating to observer page: {observer_url}")
             await page.goto(observer_url)
             print("Page loaded")
@@ -267,7 +256,7 @@ async def main():
             print("Clicked Worker tab using JavaScript")
             
             # Take screenshot after clicking Worker tab
-            worker_tab_screenshot = os.path.join(args.output_dir, "worker_tab_clicked.png")
+            worker_tab_screenshot = os.path.join(output_dir, "worker_tab_clicked.png")
             await page.screenshot(path=worker_tab_screenshot)
             print(f"Screenshot saved after clicking Worker tab: {worker_tab_screenshot}")
             
@@ -308,13 +297,13 @@ async def main():
             
             # Extract worker statistics
             worker_stats, screenshot_path = await extract_worker_stats(
-                page, frame_to_use, args.output_dir, args.user_id, args.coin_type
+                page, frame_to_use, output_dir, user_id, coin_type
             )
             
             # Save worker statistics to JSON file
             print("Saving worker statistics...")
             timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-            output_file = os.path.join(args.output_dir, f"worker_stats_{args.user_id}_{timestamp}.json")
+            output_file = os.path.join(output_dir, f"worker_stats_{user_id}_{timestamp}.json")
             
             save_json_data(worker_stats, output_file)
             print(f"Worker statistics saved to: {output_file}")
@@ -332,18 +321,83 @@ async def main():
             print(f"Output file: {output_file}")
             print(f"Screenshot: {screenshot_path}")
             
-            return 0
+            return True
             
         except Exception as e:
             print(f"Error: {e}")
             import traceback
             traceback.print_exc()
-            return 1
+            return False
             
         finally:
             # Close browser
             await browser.close()
-            print("Scraping completed successfully!")
+            print("Browser closed")
+
+async def main():
+    """Main function."""
+    parser = argparse.ArgumentParser(description="Antpool Worker Stats Scraper")
+    parser.add_argument("--access_key", help="Access key for the observer page")
+    parser.add_argument("--user_id", help="Observer user ID")
+    parser.add_argument("--coin_type", default="BTC", help="Coin type (default: BTC)")
+    parser.add_argument("--output_dir", help="Output directory for JSON and screenshots")
+    parser.add_argument("--use_supabase", action="store_true", help="Use Supabase to get account credentials")
+    
+    args = parser.parse_args()
+    
+    # Set default output directory if not provided
+    if not args.output_dir:
+        args.output_dir = os.path.join(os.getcwd(), "output")
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Process accounts
+    accounts_processed = 0
+    successful_accounts = 0
+    
+    if args.use_supabase:
+        # Get active accounts from Supabase
+        active_accounts = get_active_accounts()
+        
+        if not active_accounts:
+            print("No active accounts found in Supabase. Exiting.")
+            return
+        
+        print(f"Retrieved {len(active_accounts)} active accounts from Supabase")
+        
+        # Process each active account
+        for account in active_accounts:
+            access_key = account.get("access_key")
+            user_id = account.get("user_id")
+            coin_type = account.get("coin_type", "BTC")
+            
+            if not access_key or not user_id:
+                print(f"Skipping account with missing credentials: {account}")
+                continue
+            
+            print(f"Starting Antpool worker scraper for {user_id} ({coin_type})...")
+            success = await process_account(access_key, user_id, coin_type, args.output_dir)
+            accounts_processed += 1
+            if success:
+                successful_accounts += 1
+    else:
+        # Use command-line arguments
+        if not args.access_key or not args.user_id:
+            print("Error: access_key and user_id are required when not using Supabase")
+            print("Usage: python3 antpool_worker_scraper.py --access_key=<access_key> --user_id=<user_id> [--coin_type=<coin_type>] [--output_dir=<output_dir>]")
+            print("   or: python3 antpool_worker_scraper.py --use_supabase [--output_dir=<output_dir>]")
+            return
+        
+        print(f"Starting Antpool worker scraper for {args.user_id} ({args.coin_type})...")
+        success = await process_account(args.access_key, args.user_id, args.coin_type, args.output_dir)
+        accounts_processed += 1
+        if success:
+            successful_accounts += 1
+    
+    print("Scraping completed successfully!")
+    print(f"Total accounts processed: {accounts_processed}")
+    print(f"Successful accounts: {successful_accounts}")
 
 if __name__ == "__main__":
     asyncio.run(main())

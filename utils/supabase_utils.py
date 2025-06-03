@@ -28,6 +28,34 @@ def get_supabase_client() -> Optional[Client]:
         print(f"Error initializing Supabase client: {e}")
         return None
 
+def get_active_accounts() -> List[Dict[str, Any]]:
+    """Get active accounts from Supabase.
+    
+    Returns:
+        List[Dict[str, Any]]: List of active accounts
+    """
+    try:
+        # Get Supabase client
+        supabase = get_supabase_client()
+        
+        if not supabase:
+            print("Failed to initialize Supabase client")
+            return []
+        
+        # Query active accounts from account_credentials table
+        result = supabase.table("account_credentials").select("*").eq("is_active", True).execute()
+        
+        if hasattr(result, 'data') and result.data:
+            print(f"Retrieved {len(result.data)} active accounts from Supabase")
+            return result.data
+        else:
+            print("No active accounts found in Supabase")
+            return []
+    
+    except Exception as e:
+        print(f"Error retrieving active accounts from Supabase: {e}")
+        return []
+
 def filter_schema_fields(data: Dict[str, Any], table_name: str) -> Dict[str, Any]:
     """Filter data to include only fields that exist in the specified table schema.
     
